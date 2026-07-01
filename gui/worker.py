@@ -62,6 +62,8 @@ class TranslationWorker(QObject):
         self._pause_event.set()  # not paused by default
 
         self._review_future: asyncio.Future[str] | None = None
+        self._rephrase_requested = False
+        self._back_requested = False
 
         self._total_tokens_in = 0
         self._total_tokens_out = 0
@@ -85,14 +87,23 @@ class TranslationWorker(QObject):
         if self._review_future is not None and not self._review_future.done():
             self._review_future.set_result(edited_text)
 
+    def go_back(self) -> None:
+        self._back_requested = True
+        self.submit_review(None)
+
+    def rephrase(self) -> None:
+        self._rephrase_requested = True
+        if self._review_future is not None and not self._review_future.done():
+            self._review_future.set_result(None)
+
     # ------------------------------------------------------------------
-    # Main loop
+    # Main loop (while-loop for back navigation)
     # ------------------------------------------------------------------
 
     async def run(self) -> None:
         total = len(self._paragraphs)
 
-        for idx in range(self._current_index, total):
+        while 0 <= self._current_index < total:
             if self._stop_requested:
                 break
 
@@ -100,8 +111,8 @@ class TranslationWorker(QObject):
             if self._stop_requested:
                 break
 
+            idx = self._current_index
             para = self._paragraphs[idx]
-            self._current_index = idx
 
             try:
                 await self._translate_one(para, idx, total)
@@ -122,6 +133,12 @@ class TranslationWorker(QObject):
                 self.paragraph_failed.emit(idx, str(exc))
                 self._save_session(idx + 1)
 
+            if self._back_requested:
+                self._back_requested = False
+                self._current_index -= 1 if self._current_index > 0 else 0
+            else:
+                self._current_index += 1
+
         self._clear_session()
         self.finished.emit()
 
@@ -131,58 +148,67 @@ class TranslationWorker(QObject):
         para.status = "translating"
         self._db.save_paragraph(para)
 
-        glossary_block = ""
-        if self._glossary_mgr is not None:
-            try:
-                glossary_block = self._glossary_mgr.format_for_prompt(
-                    self._book_id
-                )
-            except Exception:
-                logger.exception("Failed to build glossary block")
+        # Allow multiple rephrase attempts
+        while True:
+            self._rephrase_requested = False
 
-        context = build_context(self._paragraphs, idx, n=2)
-
-        messages = build_messages(
-            original_text=para.original_text,
-            context_block=context,
-            glossary_block=glossary_block,
-            style=self._job.style,
-        )
-
-        result = await self._engine.translate(
-            messages=messages,
-            model_id=self._job.model_id,
-            temperature=float(self._job.temperature),
-            top_p=float(self._job.top_p),
-            max_tokens=self._job.max_tokens,
-        )
-
-        para.translated_text = result.text
-        para.tokens_in = result.tokens_in
-        para.tokens_out = result.tokens_out
-        para.cost_usd = result.cost_usd
-        para.model_id = result.model_id
-        para.retry_count = 0
-        para.error_message = None
-
-        # --- interactive / hybrid review ---
-        if self._job.mode in ("interactive", "hybrid"):
-            edited = await self._wait_for_review(idx, para)
-            if edited is None:
-                pass  # keep model translation
-            elif edited != para.translated_text:
-                old = para.translated_text or ""
-                para.translated_text = edited
-                para.is_manually_edited = True
-                from core.models import EditRecord
-                from datetime import datetime
-                para.edit_history.append(
-                    EditRecord(
-                        timestamp=datetime.now().isoformat(timespec="seconds"),
-                        old_text=old,
-                        new_text=edited,
+            glossary_block = ""
+            if self._glossary_mgr is not None:
+                try:
+                    glossary_block = self._glossary_mgr.format_for_prompt(
+                        self._book_id
                     )
-                )
+                except Exception:
+                    logger.exception("Failed to build glossary block")
+
+            context = build_context(self._paragraphs, idx, n=2)
+
+            messages = build_messages(
+                original_text=para.original_text,
+                context_block=context,
+                glossary_block=glossary_block,
+                style=self._job.style,
+            )
+
+            result = await self._engine.translate(
+                messages=messages,
+                model_id=self._job.model_id,
+                temperature=float(self._job.temperature),
+                top_p=float(self._job.top_p),
+                max_tokens=self._job.max_tokens,
+            )
+
+            para.translated_text = result.text
+            para.tokens_in = result.tokens_in
+            para.tokens_out = result.tokens_out
+            para.cost_usd = result.cost_usd
+            para.model_id = result.model_id
+            para.retry_count = 0
+            para.error_message = None
+
+            # --- interactive / hybrid review ---
+            if self._job.mode in ("interactive", "hybrid"):
+                edited = await self._wait_for_review(idx, para)
+                if edited is None:
+                    if self._rephrase_requested:
+                        continue  # re-translate
+                    break  # keep model translation, move on
+                elif edited != para.translated_text:
+                    old = para.translated_text or ""
+                    para.translated_text = edited
+                    para.is_manually_edited = True
+                    from core.models import EditRecord
+                    from datetime import datetime
+                    para.edit_history.append(
+                        EditRecord(
+                            timestamp=datetime.now().isoformat(timespec="seconds"),
+                            old_text=old,
+                            new_text=edited,
+                        )
+                    )
+                break
+            else:
+                break  # auto mode — no review
 
         para.status = "completed"
         self._db.save_paragraph(para)
@@ -261,6 +287,7 @@ class WorkerManager(QObject):
     interim_cost_a = pyqtSignal(int, int, float)  # tokens_in, tokens_out, cost_usd
     interim_cost_b = pyqtSignal(int, int, float)
     paragraph_failed = pyqtSignal(int, str)  # index, error_message
+    paragraph_done = pyqtSignal(int, int)  # index, paragraph_id
 
     def __init__(self, db: Database, engine: TranslatorEngine) -> None:
         super().__init__()
@@ -345,6 +372,18 @@ class WorkerManager(QObject):
         elif model == "B" and self._worker_b:
             self._worker_b.submit_review(edited_text)
 
+    def go_back(self, model: str = "A") -> None:
+        if model == "A" and self._worker_a:
+            self._worker_a.go_back()
+        elif model == "B" and self._worker_b:
+            self._worker_b.go_back()
+
+    def rephrase(self, model: str = "A") -> None:
+        if model == "A" and self._worker_a:
+            self._worker_a.rephrase()
+        elif model == "B" and self._worker_b:
+            self._worker_b.rephrase()
+
     @property
     def is_running(self) -> bool:
         return (
@@ -369,6 +408,7 @@ class WorkerManager(QObject):
             worker.progress_changed.connect(self.progress_b_changed.emit)
             worker.interim_cost.connect(self.interim_cost_b.emit)
         worker.paragraph_failed.connect(self.paragraph_failed.emit)
+        worker.paragraph_done.connect(self.paragraph_done.emit)
 
     def _on_worker_finished(self) -> None:
         self._finished_count += 1

@@ -4,7 +4,7 @@ from datetime import datetime
 from decimal import Decimal
 
 from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QShortcut, QKeySequence
+from PyQt6.QtGui import QColor, QShortcut, QKeySequence
 from PyQt6.QtWidgets import (
     QComboBox,
     QHBoxLayout,
@@ -38,10 +38,16 @@ class TranslationPanel(QWidget):
     - Activity log
     - Problem (failed) paragraph list
     - Interactive review for manual editing
+    - Hybrid side panel with paragraph list and status colors
     """
 
     translation_started = pyqtSignal(int, int)   # translation_a_id, translation_b_id (0 if none)
     translation_finished = pyqtSignal()
+
+    _COLOR_COMPLETED = QColor(200, 255, 200)
+    _COLOR_FAILED = QColor(255, 200, 200)
+    _COLOR_PENDING = QColor(255, 255, 200)
+    _COLOR_REVIEW = QColor(200, 220, 255)
 
     def __init__(
         self,
@@ -64,9 +70,12 @@ class TranslationPanel(QWidget):
         self._worker_mgr.interim_cost_b.connect(self._update_cost_b)
 
         self._book_id: int | None = None
-        self._review_paragraphs: dict[int, Paragraph] = {}
+        self._paragraphs_a: list[Paragraph] = []
+        self._side_items: dict[int, QListWidgetItem] = {}
+        self._current_review_idx: int | None = None
 
         self._build_ui()
+        self._connect_editor_signals()
         self._set_running_state(False)
 
     # ------------------------------------------------------------------
@@ -144,28 +153,48 @@ class TranslationPanel(QWidget):
 
         splitter.addWidget(top)
 
-        # Bottom half: problem paragraphs + review editor
+        # Bottom half: problem paragraphs + editor + side panel
         bottom = QSplitter(Qt.Orientation.Horizontal)
 
+        bottom_left = QWidget()
+        bottom_left_layout = QVBoxLayout(bottom_left)
+
         # -- Problem paragraphs ------------------------------------------
-        prob_widget = QWidget()
-        prob_layout = QVBoxLayout(prob_widget)
         prob_label = QLabel("Проблемные абзацы:")
         prob_label.setStyleSheet("font-weight: bold;")
-        prob_layout.addWidget(prob_label)
+        bottom_left_layout.addWidget(prob_label)
+
         self._problem_list = QListWidget()
-        prob_layout.addWidget(self._problem_list, 1)
-        bottom.addWidget(prob_widget)
+        bottom_left_layout.addWidget(self._problem_list, 1)
 
         # -- Review editor -----------------------------------------------
         self._editor = ParagraphEditor()
-        self._editor.accepted.connect(self._on_review_accepted)
-        self._editor.rejected.connect(self._on_review_rejected)
         self._editor.hide()
-        bottom.addWidget(self._editor)
+        bottom_left_layout.addWidget(self._editor)
 
+        bottom.addWidget(bottom_left)
+
+        # -- Hybrid side panel -------------------------------------------
+        side_widget = QWidget()
+        side_layout = QVBoxLayout(side_widget)
+        side_label = QLabel("Абзацы:")
+        side_label.setStyleSheet("font-weight: bold;")
+        side_layout.addWidget(side_label)
+
+        self._side_list = QListWidget()
+        self._side_list.itemClicked.connect(self._on_side_item_clicked)
+        side_layout.addWidget(self._side_list, 1)
+
+        bottom.addWidget(side_widget)
         splitter.addWidget(bottom)
         outer.addWidget(splitter, 1)
+
+    def _connect_editor_signals(self) -> None:
+        self._editor.accepted.connect(self._on_review_accepted)
+        self._editor.rejected.connect(self._on_review_rejected)
+        self._editor.back_requested.connect(self._on_review_back)
+        self._editor.skip_requested.connect(self._on_review_skip)
+        self._editor.rephrase_requested.connect(self._on_review_rephrase)
 
     # ------------------------------------------------------------------
     # Public API
@@ -219,7 +248,7 @@ class TranslationPanel(QWidget):
             source_type="parallel",
             mode=mode,
         )
-        paragraphs_a = self._create_paragraphs_for_translation(
+        self._paragraphs_a = self._create_paragraphs_for_translation(
             book, trans_a.id
         )
 
@@ -264,27 +293,40 @@ class TranslationPanel(QWidget):
             self._worker_mgr.worker_finished.disconnect()
         except TypeError:
             pass
+        try:
+            self._worker_mgr.paragraph_done.disconnect()
+        except TypeError:
+            pass
 
         self._worker_mgr.progress_changed.connect(self._on_progress_a)
         self._worker_mgr.worker_finished.connect(self._on_worker_finished)
+        self._worker_mgr.paragraph_done.connect(self._on_paragraph_done)
         if compare:
             self._worker_mgr.progress_b_changed.connect(self._on_progress_b)
 
         # Setup progress
-        self._progress_a_bar.setMaximum(len(paragraphs_a))
+        self._progress_a_bar.setMaximum(len(self._paragraphs_a))
         self._progress_a_bar.setValue(0)
 
         # Clear state
         self._problem_list.clear()
-        self._review_paragraphs.clear()
+        self._side_list.clear()
+        self._side_items.clear()
+        self._current_review_idx = None
         self._editor.hide()
+
+        # Populate side panel with pending items
+        for idx, p in enumerate(self._paragraphs_a):
+            item = self._make_side_item(idx, p)
+            self._side_list.addItem(item)
+            self._side_items[idx] = item
 
         # Start
         self._worker_mgr.start(
             book_id=self._book_id,
             translation_a_id=trans_a.id,
             job_a=job_a,
-            paragraphs_a=paragraphs_a,
+            paragraphs_a=self._paragraphs_a,
             start_index_a=0,
             translation_b_id=translation_b_id,
             job_b=job_b,
@@ -301,7 +343,6 @@ class TranslationPanel(QWidget):
 
         self.translation_started.emit(trans_a.id, translation_b_id or 0)
 
-        # Save session
         self._db.save_session(
             book_id=self._book_id,
             mode=mode,
@@ -362,28 +403,24 @@ class TranslationPanel(QWidget):
         self._set_running_state(False)
 
     # ------------------------------------------------------------------
-    # Hotkey actions (called from MainWindow)
+    # Hotkey actions
     # ------------------------------------------------------------------
 
     def toggle_pause(self) -> None:
-        """Space: toggle pause/resume."""
         if self._resume_btn.isVisible():
             self._on_resume()
         elif self._pause_btn.isVisible():
             self._on_pause()
 
     def trigger_stop(self) -> None:
-        """Esc: stop translation."""
         if self._stop_btn.isVisible():
             self._on_stop()
 
     def trigger_next(self) -> None:
-        """Ctrl+Enter: accept current review in interactive/hybrid mode."""
         if self._editor.isVisible():
             self._on_review_accepted(self._editor.get_edited_text())
 
     def force_commit(self) -> None:
-        """Ctrl+S: force commit DB changes."""
         try:
             self._db.conn.commit()
             self.log("Прогресс сохранён")
@@ -413,25 +450,83 @@ class TranslationPanel(QWidget):
     def _on_needs_review(
         self, idx: int, original: str, translation: str
     ) -> None:
+        self._current_review_idx = idx
         self._editor.set_content(original, translation)
         self._editor.show()
 
-    def _on_review_accepted(self, edited_text: str) -> None:
-        self._worker_mgr.submit_review(edited_text)
-        self._editor.hide()
-
-    def _on_review_rejected(self) -> None:
-        self._worker_mgr.submit_review(None)
-        self._editor.hide()
-
-    # ------------------------------------------------------------------
-    # Problem paragraphs
-    # ------------------------------------------------------------------
+    def _on_paragraph_done(self, idx: int, paragraph_id: int) -> None:
+        # Update side panel item color
+        item = self._side_items.get(idx)
+        if item is not None:
+            item.setBackground(self._COLOR_COMPLETED)
 
     def _on_paragraph_failed(self, idx: int, error: str) -> None:
         item = QListWidgetItem(f"#{idx}: {error}")
         self._problem_list.addItem(item)
         self.log(f"Ошибка абзаца #{idx}: {error}")
+        # Update side panel item color
+        side = self._side_items.get(idx)
+        if side is not None:
+            side.setBackground(self._COLOR_FAILED)
+
+    # ------------------------------------------------------------------
+    # Editor signal handlers
+    # ------------------------------------------------------------------
+
+    def _on_review_accepted(self, edited_text: str) -> None:
+        self._worker_mgr.submit_review(edited_text)
+        self._editor.hide()
+        self._current_review_idx = None
+
+    def _on_review_rejected(self) -> None:
+        self._worker_mgr.submit_review(None)
+        self._editor.hide()
+        self._current_review_idx = None
+
+    def _on_review_back(self) -> None:
+        self._worker_mgr.go_back()
+        self._editor.hide()
+        self._current_review_idx = None
+
+    def _on_review_skip(self) -> None:
+        self._worker_mgr.submit_review(None)
+        self._editor.hide()
+        self._current_review_idx = None
+
+    def _on_review_rephrase(self) -> None:
+        self._worker_mgr.rephrase()
+        self._editor.hide()
+        self._current_review_idx = None
+
+    # ------------------------------------------------------------------
+    # Side panel
+    # ------------------------------------------------------------------
+
+    def _on_side_item_clicked(self, item: QListWidgetItem) -> None:
+        idx = item.data(Qt.ItemDataRole.UserRole)
+        if idx is None:
+            return
+        if idx < 0 or idx >= len(self._paragraphs_a):
+            return
+        para = self._paragraphs_a[idx]
+        if para.translated_text:
+            self._editor.set_content(para.original_text, para.translated_text)
+        else:
+            self._editor.set_content(para.original_text, "")
+        self._current_review_idx = idx
+        self._editor.show()
+
+    def _make_side_item(self, idx: int, para: Paragraph) -> QListWidgetItem:
+        chapter = para.chapter_title or "?"
+        text = para.original_text[:60].replace("\n", " ")
+        label = f"§{idx} [{chapter}] {text}"
+        item = QListWidgetItem(label)
+        item.setData(Qt.ItemDataRole.UserRole, idx)
+        if para.status == "completed" and para.translated_text:
+            item.setBackground(self._COLOR_COMPLETED)
+        elif para.status == "failed":
+            item.setBackground(self._COLOR_FAILED)
+        return item
 
     # ------------------------------------------------------------------
     # Mode change
@@ -461,7 +556,6 @@ class TranslationPanel(QWidget):
     def log(self, message: str) -> None:
         ts = datetime.now().strftime("%H:%M:%S")
         self._log_text.appendPlainText(f"[{ts}] {message}")
-
 
     # ------------------------------------------------------------------
     # Cost update

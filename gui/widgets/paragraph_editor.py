@@ -12,10 +12,13 @@ from PyQt6.QtWidgets import (
 
 
 class ParagraphEditor(QWidget):
-    """Shows original + editable translation; emit signals to accept or reject."""
+    """Shows original + editable translation; emit signals for user actions."""
 
     accepted = pyqtSignal(str)   # edited text
     rejected = pyqtSignal()      # keep original model translation
+    back_requested = pyqtSignal()
+    skip_requested = pyqtSignal()
+    rephrase_requested = pyqtSignal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -31,7 +34,7 @@ class ParagraphEditor(QWidget):
 
         self._orig_text = QPlainTextEdit()
         self._orig_text.setReadOnly(True)
-        self._orig_text.setMaximumHeight(200)
+        self._orig_text.setMaximumHeight(180)
         layout.addWidget(self._orig_text)
 
         # Translation (editable)
@@ -40,19 +43,42 @@ class ParagraphEditor(QWidget):
         layout.addWidget(trans_label)
 
         self._trans_text = QPlainTextEdit()
-        self._trans_text.setMinimumHeight(100)
+        self._trans_text.setMinimumHeight(80)
         layout.addWidget(self._trans_text)
 
-        # Buttons
-        btn_row = QHBoxLayout()
+        # Navigation buttons row
+        nav_row = QHBoxLayout()
+        self._back_btn = QPushButton("◀ Назад")
+        self._back_btn.clicked.connect(self._on_back)
+        nav_row.addWidget(self._back_btn)
+
+        self._skip_btn = QPushButton("⏭ Пропустить")
+        self._skip_btn.clicked.connect(self._on_skip)
+        nav_row.addWidget(self._skip_btn)
+
+        nav_row.addStretch()
+
+        self._rephrase_btn = QPushButton("🔄 Перефразировать")
+        self._rephrase_btn.clicked.connect(self._on_rephrase)
+        nav_row.addWidget(self._rephrase_btn)
+
+        self._next_btn = QPushButton("Далее ▶")
+        self._next_btn.setDefault(True)
+        self._next_btn.clicked.connect(self._on_next)
+        nav_row.addWidget(self._next_btn)
+
+        layout.addLayout(nav_row)
+
+        # Accept / Reject row
+        action_row = QHBoxLayout()
+        action_row.addStretch()
         self._accept_btn = QPushButton("✅ Принять")
         self._accept_btn.clicked.connect(self._on_accept)
         self._reject_btn = QPushButton("↩️ Оставить как есть")
         self._reject_btn.clicked.connect(self._on_reject)
-        btn_row.addStretch()
-        btn_row.addWidget(self._accept_btn)
-        btn_row.addWidget(self._reject_btn)
-        layout.addLayout(btn_row)
+        action_row.addWidget(self._accept_btn)
+        action_row.addWidget(self._reject_btn)
+        layout.addLayout(action_row)
 
     # ------------------------------------------------------------------
     # Public API
@@ -75,3 +101,15 @@ class ParagraphEditor(QWidget):
 
     def _on_reject(self) -> None:
         self.rejected.emit()
+
+    def _on_next(self) -> None:
+        self.accepted.emit(self._trans_text.toPlainText())
+
+    def _on_skip(self) -> None:
+        self.skip_requested.emit()
+
+    def _on_back(self) -> None:
+        self.back_requested.emit()
+
+    def _on_rephrase(self) -> None:
+        self.rephrase_requested.emit()
