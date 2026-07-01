@@ -4,6 +4,7 @@ import json
 import sqlite3
 from pathlib import Path
 from decimal import Decimal
+from typing import TYPE_CHECKING, cast
 
 from core.models import (
     Book,
@@ -14,6 +15,9 @@ from core.models import (
     Translation,
 )
 from state.schema import migrate
+
+if TYPE_CHECKING:
+    from typing import Literal
 
 
 class Database:
@@ -66,13 +70,9 @@ class Database:
                     sum(len(ch.paragraphs) for ch in book.chapters),
                 ),
             )
+            assert cursor.lastrowid is not None
             book.id = cursor.lastrowid
-        else:
-            conn.execute(
-                """UPDATE books SET title=?, source_path=?, source_format=?, file_hash=?,
-                   updated_at=datetime('now') WHERE id=?""",
-                (book.title, book.source_path, book.source_format, book.file_hash, book.id),
-            )
+        assert book.id is not None
         # Save translations that belong to this book
         for t in book.translations:
             if t.book_id == book.id or t.book_id == 0:
@@ -136,7 +136,12 @@ class Database:
     def list_books(self) -> list[Book]:
         conn = self.conn
         rows = conn.execute("SELECT id FROM books ORDER BY updated_at DESC").fetchall()
-        return [self.load_book(r["id"]) for r in rows if self.load_book(r["id"]) is not None]
+        result: list[Book] = []
+        for r in rows:
+            book = self.load_book(r["id"])
+            if book is not None:
+                result.append(book)
+        return result
 
     # ------------------------------------------------------------------
     # Translations
@@ -157,13 +162,14 @@ class Database:
             (book_id, name, model_id, source_type, mode),
         )
         conn.commit()
+        assert cursor.lastrowid is not None
         return Translation(
             id=cursor.lastrowid,
             book_id=book_id,
             name=name,
             model_id=model_id,
-            source_type=source_type,
-            mode=mode,
+            source_type=cast("Literal['parallel', 'imported', 'previous']", source_type),
+            mode=cast("Literal['auto', 'interactive', 'hybrid']", mode),
             created_at="",
         )
 
@@ -175,6 +181,7 @@ class Database:
                    VALUES (?, ?, ?, ?, ?, ?, ?)""",
                 (t.book_id, t.name, t.model_id, t.source_type, t.mode, str(t.total_cost), t.total_tokens),
             )
+            assert cursor.lastrowid is not None
             t.id = cursor.lastrowid
         else:
             conn.execute(
@@ -223,6 +230,7 @@ class Database:
                     p.error_message, int(p.is_manually_edited), edit_history_json,
                 ),
             )
+            assert cursor.lastrowid is not None
             p.id = cursor.lastrowid
         else:
             conn.execute(
