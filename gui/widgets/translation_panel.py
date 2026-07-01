@@ -4,6 +4,7 @@ from datetime import datetime
 from decimal import Decimal
 
 from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtGui import QShortcut, QKeySequence
 from PyQt6.QtWidgets import (
     QComboBox,
     QHBoxLayout,
@@ -359,6 +360,35 @@ class TranslationPanel(QWidget):
         self._worker_mgr.stop()
         self.log("Перевод остановлен пользователем")
         self._set_running_state(False)
+
+    # ------------------------------------------------------------------
+    # Hotkey actions (called from MainWindow)
+    # ------------------------------------------------------------------
+
+    def toggle_pause(self) -> None:
+        """Space: toggle pause/resume."""
+        if self._resume_btn.isVisible():
+            self._on_resume()
+        elif self._pause_btn.isVisible():
+            self._on_pause()
+
+    def trigger_stop(self) -> None:
+        """Esc: stop translation."""
+        if self._stop_btn.isVisible():
+            self._on_stop()
+
+    def trigger_next(self) -> None:
+        """Ctrl+Enter: accept current review in interactive/hybrid mode."""
+        if self._editor.isVisible():
+            self._on_review_accepted(self._editor.get_edited_text())
+
+    def force_commit(self) -> None:
+        """Ctrl+S: force commit DB changes."""
+        try:
+            self._db.conn.commit()
+            self.log("Прогресс сохранён")
+        except Exception as exc:
+            self.log(f"Ошибка сохранения: {exc}")
 
     # ------------------------------------------------------------------
     # Worker signal handlers

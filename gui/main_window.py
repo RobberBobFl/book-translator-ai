@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from PyQt6.QtGui import QAction, QKeySequence
+from PyQt6.QtGui import QAction, QKeySequence, QShortcut
 from PyQt6.QtWidgets import (
     QMainWindow,
     QMessageBox,
@@ -63,6 +63,9 @@ class MainWindow(QMainWindow):
         self._status = QStatusBar()
         self.setStatusBar(self._status)
         self._status.showMessage("Готов")
+
+        # -- Hotkeys -----------------------------------------------------
+        self._build_hotkeys()
 
         # -- Signal wiring -----------------------------------------------
         self._connect_signals()
@@ -142,6 +145,25 @@ class MainWindow(QMainWindow):
             "Version 0.1.0\n"
             "https://github.com/example/book-translator",
         )
+
+    # ------------------------------------------------------------------
+    # Hotkeys
+    # ------------------------------------------------------------------
+
+    def _build_hotkeys(self) -> None:
+        tp = self._translation_panel
+
+        # Space — pause / resume
+        QShortcut(QKeySequence("Space"), self, activated=tp.toggle_pause)
+
+        # Esc — stop
+        QShortcut(QKeySequence("Escape"), self, activated=tp.trigger_stop)
+
+        # Ctrl+Enter — accept review
+        QShortcut(QKeySequence("Ctrl+Return"), self, activated=tp.trigger_next)
+
+        # Ctrl+S — force commit
+        QShortcut(QKeySequence.StandardKey.Save, self, activated=tp.force_commit)
 
     # ------------------------------------------------------------------
     # Resume dialog
