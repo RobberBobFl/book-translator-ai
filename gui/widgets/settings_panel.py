@@ -335,7 +335,7 @@ class SettingsPanel(QWidget):
 
 
 class _ProviderDialog(QDialog):
-    """Simple dialog for adding/editing a provider."""
+    """Dialog for adding/editing a provider with dynamic model list."""
 
     def __init__(
         self,
@@ -344,33 +344,50 @@ class _ProviderDialog(QDialog):
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("Провайдер" if provider is None else "Редактировать провайдера")
-        self.setMinimumWidth(420)
+        self.setMinimumWidth(480)
         self._provider = provider
 
         self._name_edit = QLineEdit()
+        self._name_edit.textChanged.connect(self._on_name_changed)
+
         self._url_edit = QLineEdit()
+
         self._key_edit = QLineEdit()
         self._key_edit.setEchoMode(QLineEdit.EchoMode.Password)
+
         self._model_combo = QComboBox()
         self._model_combo.setEditable(True)
-        self._model_combo.addItems([
-            "gpt-4o", "gpt-4o-mini", "gpt-3.5-turbo",
-            "claude-3-5-sonnet-20241022", "deepseek-chat",
-            "llama3.1", "llama3.2", "mistral",
-        ])
+        self._model_combo.setPlaceholderText("Введите название модели...")
 
+        # Populate combo with provider's existing models if editing
+        if provider is not None and provider.models:
+            for model_name in provider.models:
+                self._model_combo.addItem(model_name)
         if provider is not None:
             self._name_edit.setText(provider.name)
             self._url_edit.setText(provider.base_url)
             self._key_edit.setText(provider.api_key or "")
-            self._model_combo.setCurrentText(provider.default_model)
+            if provider.default_model and provider.default_model in [
+                self._model_combo.itemText(i) for i in range(self._model_combo.count())
+            ]:
+                self._model_combo.setCurrentText(provider.default_model)
 
         layout = QVBoxLayout()
         form = QFormLayout()
+
         form.addRow("Название:", self._name_edit)
         form.addRow("API Base URL:", self._url_edit)
         form.addRow("API Key:", self._key_edit)
-        form.addRow("Модель:", self._model_combo)
+
+        # Model row with load button
+        model_row = QHBoxLayout()
+        model_row.addWidget(self._model_combo, 1)
+        self._load_models_btn = QPushButton("⬇ Загрузить")
+        self._load_models_btn.setToolTip("Запросить список моделей через API")
+        self._load_models_btn.clicked.connect(self._on_load_models)
+        model_row.addWidget(self._load_models_btn)
+        form.addRow("Модель:", model_row)
+
         layout.addLayout(form)
 
         btn_row = QHBoxLayout()
@@ -385,6 +402,115 @@ class _ProviderDialog(QDialog):
 
         self.setLayout(layout)
 
+    # ------------------------------------------------------------------
+    # Auto-generate id from name
+    # ------------------------------------------------------------------
+
+    def _on_name_changed(self, text: str) -> None:
+        if self._provider is None:
+            self._auto_id = text.strip().lower().replace(" ", "_")
+        else:
+            self._auto_id = self._provider.id
+
+    # ------------------------------------------------------------------
+    # Load models from API
+    # ------------------------------------------------------------------
+
+    def _on_load_models(self) -> None:
+        url = self._url_edit.text().strip().rstrip("/")
+        if not url:
+            QMessageBox.warning(self, "Ошибка", "Сначала укажите API Base URL")
+            return
+        api_key = self._key_edit.text().strip()
+
+        models_url = f"{url}/models"
+
+        try:
+            import json
+            import urllib.request
+
+            req = urllib.request.Request(models_url)
+            req.add_header("User-Agent", "book-translator/0.1")
+            if api_key:
+                req.add_header("Authorization", f"Bearer {api_key}")
+
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                data = json.loads(resp.read().decode())
+
+            parsed = self._parse_models_response(data)
+            if not parsed:
+                QMessageBox.information(
+                    self, "Нет моделей",
+                    "API не вернул список моделей.\n"
+                    "Введите название модели вручную.",
+                )
+                return
+
+            self._model_combo.blockSignals(True)
+            self._model_combo.clear()
+            self._model_combo.addItems(parsed)
+            self._model_combo.blockSignals(False)
+            QMessageBox.information(
+                self, "Готово",
+                f"Загружено {len(parsed)} моделей.\n"
+                "Выберите нужную или введите свою.",
+            )
+
+        except Exception as exc:
+            QMessageBox.warning(
+                self, "Ошибка загрузки",
+                f"Не удалось получить список моделей:\n{exc}\n\n"
+                "Введите название модели вручную.",
+            )
+
+    @staticmethod
+    def _parse_models_response(data) -> list[str]:
+        """Try different response formats to extract model IDs."""
+        # Format 1: {data: [{id: "model-name", ...}, ...]}  (OpenRouter)
+        if isinstance(data, dict) and "data" in data:
+            items = data["data"]
+            if isinstance(items, list):
+                ids = []
+                for item in items:
+                    if isinstance(item, dict) and "id" in item:
+                        ids.append(str(item["id"]))
+                if ids:
+                    return sorted(ids)
+
+        # Format 2: [{id: "model-name", ...}, ...]  (plain list)
+        if isinstance(data, list):
+            ids = []
+            for item in data:
+                if isinstance(item, dict) and "id" in item:
+                    ids.append(str(item["id"]))
+            if ids:
+                return sorted(ids)
+
+        # Format 3: {object: "list", data: [...]}  (OpenAI format)
+        if isinstance(data, dict):
+            for key in ("data", "models", "items", "result"):
+                val = data.get(key)
+                if isinstance(val, list):
+                    ids = []
+                    for item in val:
+                        if isinstance(item, dict):
+                            for id_key in ("id", "name", "model", "model_id"):
+                                if id_key in item:
+                                    ids.append(str(item[id_key]))
+                                    break
+                    if ids:
+                        return sorted(ids)
+
+        # Flat list of strings
+        if isinstance(data, list) and all(isinstance(x, str) for x in data):
+            return sorted(data)
+
+        return []
+
+    # ------------------------------------------------------------------
+    # Validation & result
+    # ------------------------------------------------------------------
+
     def _on_ok(self) -> None:
         if not self._name_edit.text().strip():
             QMessageBox.warning(self, "Ошибка", "Название обязательно")
@@ -395,13 +521,36 @@ class _ProviderDialog(QDialog):
         self.accept()
 
     def get_provider(self) -> Provider:
-        _id = self._provider.id if self._provider else self._name_edit.text().strip().lower().replace(" ", "_")
-        model_name = self._model_combo.currentText().strip() or "gpt-4o"
+        _id = (
+            self._provider.id
+            if self._provider
+            else self._name_edit.text().strip().lower().replace(" ", "_")
+        )
+        model_name = self._model_combo.currentText().strip()
+        if not model_name:
+            model_name = "gpt-4o"
+
+        # Collect all entries from the combo as model keys
+        models: dict[str, ModelPricing] = {}
+        for i in range(self._model_combo.count()):
+            name = self._model_combo.itemText(i).strip()
+            if name:
+                pricing = (
+                    self._provider.models[name]
+                    if self._provider and name in self._provider.models
+                    else ModelPricing(input_cost_per_1k=0, output_cost_per_1k=0)
+                )
+                models[name] = pricing
+
+        # Ensure current selection is included
+        if model_name not in models:
+            models[model_name] = ModelPricing(input_cost_per_1k=0, output_cost_per_1k=0)
+
         return Provider(
             id=_id,
             name=self._name_edit.text().strip(),
             base_url=self._url_edit.text().strip(),
             api_key=self._key_edit.text().strip() or None,
-            models={model_name: ModelPricing(input_cost_per_1k=0, output_cost_per_1k=0)},
+            models=models,
             default_model=model_name,
         )
