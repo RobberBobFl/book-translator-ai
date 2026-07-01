@@ -53,7 +53,7 @@ class Database:
     # Books
     # ------------------------------------------------------------------
 
-    def save_book(self, book: Book) -> Book:
+    def save_book(self, book: Book, raw_translation_name: str = "raw") -> Book:
         conn = self.conn
         if book.id is None:
             cursor = conn.execute(
@@ -79,6 +79,22 @@ class Database:
             if t.book_id == book.id or t.book_id == 0:
                 t.book_id = book.id
                 self.save_translation(t)
+        # Auto-create a raw translation if none exists and paragraphs exist
+        has_translation = any(
+            p.translation_id != 0
+            for ch in book.chapters for p in ch.paragraphs
+        )
+        if not has_translation and book.chapters:
+            raw_t = self.create_translation(
+                book_id=book.id,
+                name=raw_translation_name,
+                source_type="parallel",
+            )
+            for chapter in book.chapters:
+                for p in chapter.paragraphs:
+                    p.translation_id = raw_t.id
+                    p.book_id = book.id
+                    self.save_paragraph(p)
         conn.commit()
         return book
 
