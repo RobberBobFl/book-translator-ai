@@ -8,3 +8,7 @@ wheels/
 
 # Virtual environments
 .venv
+agent.md
+opencode.json
+plan.md
+*.db
