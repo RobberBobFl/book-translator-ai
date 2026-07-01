@@ -1,14 +1,28 @@
 import sys
+import asyncio
 import logging
+
+from PyQt6.QtWidgets import QApplication
+from qasync import QEventLoop
+
+from gui.main_window import MainWindow
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
 
 
 def main() -> None:
-    logger.info("book-translator v0.1.0 — структура проекта инициализирована")
-    logger.info("Модули: core, parsers, translator, state, exporters, gui, utils")
-    logger.info("Все библиотеки установлены, проект готов к разработке")
+    app = QApplication(sys.argv)
+    app.setApplicationName("Book Translator")
+
+    loop = QEventLoop(app)
+    asyncio.set_event_loop(loop)
+
+    window = MainWindow()
+    window.show()
+
+    with loop:
+        loop.run_forever()
 
 
 if __name__ == "__main__":

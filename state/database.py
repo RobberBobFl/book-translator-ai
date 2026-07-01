@@ -11,7 +11,6 @@ from core.models import (
     EditRecord,
     GlossaryEntry,
     Paragraph,
-    Provider,
     Translation,
 )
 from state.schema import migrate

@@ -2,6 +2,7 @@
 
 from pathlib import Path
 
+import ebooklib
 from ebooklib import epub
 
 from parsers.base import BookParser
