@@ -12,6 +12,7 @@ from PyQt6.QtWidgets import (
 
 from core.config import ConfigManager
 from gui.widgets.book_loader import BookLoaderWidget
+from utils.hash_utils import compute_file_hash
 from gui.widgets.glossary_panel import GlossaryPanel
 from gui.widgets.comparison_panel import ComparisonPanel
 from gui.widgets.settings_panel import SettingsPanel
@@ -166,7 +167,7 @@ class MainWindow(QMainWindow):
         QShortcut(QKeySequence.StandardKey.Save, self, activated=tp.force_commit)
 
     # ------------------------------------------------------------------
-    # Resume dialog
+    # Resume dialog with hash verification
     # ------------------------------------------------------------------
 
     def _check_resume(self) -> None:
@@ -182,24 +183,74 @@ class MainWindow(QMainWindow):
         if book is None:
             return
 
+        source_path = book.source_path
         mode = session.get("mode", "auto")
         idx = session.get("current_paragraph_index", 0)
+        total = sum(len(ch.paragraphs) for ch in book.chapters)
 
-        answer = QMessageBox.question(
-            self,
-            "Восстановить сессию?",
-            f"Найдена незавершённая сессия перевода:\n"
-            f"    Книга: {book.title}\n"
-            f"    Режим: {mode}\n"
-            f"    Прогресс: {idx}/{sum(len(ch.paragraphs) for ch in book.chapters)}\n\n"
-            f"Продолжить?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
-        )
-
-        if answer != QMessageBox.StandardButton.Yes:
+        # --- File existence check ---
+        if not Path(source_path).exists():
+            QMessageBox.warning(
+                self,
+                "Файл не найден",
+                f"Файл книги не найден:\n{source_path}\n\n"
+                "Невозможно продолжить перевод. Сессия будет очищена.",
+            )
             self._db.clear_session()
             return
 
+        # --- Hash comparison ---
+        current_hash = compute_file_hash(source_path)
+        hash_match = current_hash == book.file_hash
+
+        if not hash_match:
+            msg = QMessageBox(self)
+            msg.setWindowTitle("Файл изменился")
+            msg.setText(
+                f"Файл книги изменился с момента последнего перевода."
+            )
+            msg.setInformativeText(
+                f"Книга: {book.title}\n"
+                f"Прогресс: {idx}/{total}\n\n"
+                "Начать перевод заново или продолжить текущий (рискованно — "
+                "нумерация абзацев могла измениться)?"
+            )
+            restart_btn = msg.addButton("Начать заново", QMessageBox.ButtonRole.YesRole)
+            continue_btn = msg.addButton("Продолжить", QMessageBox.ButtonRole.NoRole)
+            cancel_btn = msg.addButton("Отмена", QMessageBox.ButtonRole.RejectRole)
+            msg.exec()
+
+            if msg.clickedButton() == restart_btn:
+                self._reset_book(book_id)
+                return
+            elif msg.clickedButton() == cancel_btn:
+                return
+            # else continue_btn → fall through to resume
+        else:
+            # Hash matches — simple dialog
+            msg = QMessageBox(self)
+            msg.setWindowTitle("Восстановить сессию?")
+            msg.setText(
+                f"Обнаружен незавершённый перевод книги "
+                f"«{book.title}»."
+            )
+            msg.setInformativeText(
+                f"Переведено {idx} из {total} абзацев.\n\n"
+                "Продолжить?"
+            )
+            resume_btn = msg.addButton("Продолжить", QMessageBox.ButtonRole.YesRole)
+            restart_btn = msg.addButton("Начать заново", QMessageBox.ButtonRole.NoRole)
+            cancel_btn = msg.addButton("Отмена", QMessageBox.ButtonRole.RejectRole)
+            msg.exec()
+
+            if msg.clickedButton() == restart_btn:
+                self._reset_book(book_id)
+                return
+            elif msg.clickedButton() == cancel_btn:
+                return
+            # else resume_btn → fall through
+
+        # --- Resume translation ---
         self._glossary_panel.load_book(book)
         self._translation_panel.resume_session(
             book_id=book_id,
@@ -210,6 +261,15 @@ class MainWindow(QMainWindow):
         )
         self._translation_panel.set_book(book_id)
         self._tabs.setCurrentWidget(self._translation_panel)
+
+    def _reset_book(self, book_id: int) -> None:
+        """Delete book and session so user can start fresh."""
+        self._db.clear_session()
+        self._db.delete_book(book_id)
+        self._glossary_panel.clear()
+        self._translation_panel.set_book(None)
+        self._tabs.setCurrentWidget(self._book_loader)
+        self._status.showMessage("Сессия сброшена, загрузите книгу заново")
 
     # ------------------------------------------------------------------
     # Cleanup
