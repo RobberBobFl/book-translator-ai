@@ -107,5 +107,15 @@ class TranslationJob(BaseModel):
     mode: Literal["auto", "interactive", "hybrid"] = "auto"
 
 
+class TranslationResult(BaseModel):
+    """Result of a single translation call."""
+
+    text: str
+    tokens_in: int = 0
+    tokens_out: int = 0
+    cost_usd: Decimal = Decimal("0")
+    model_id: str = ""
+
+
 # Resolve forward references
 Book.model_rebuild()
