@@ -217,7 +217,7 @@ class Database:
         ) if p.edit_history else None
         if p.id == 0:
             cursor = conn.execute(
-                """INSERT INTO paragraphs
+                """INSERT OR IGNORE INTO paragraphs
                    (translation_id, book_id, chapter_title, paragraph_index,
                     original_text, model_id, translated_text, status,
                     tokens_in, tokens_out, cost_usd, retry_count,
@@ -230,8 +230,16 @@ class Database:
                     p.error_message, int(p.is_manually_edited), edit_history_json,
                 ),
             )
-            assert cursor.lastrowid is not None
-            p.id = cursor.lastrowid
+            if cursor.lastrowid is not None:
+                p.id = cursor.lastrowid
+            else:
+                row = conn.execute(
+                    """SELECT id FROM paragraphs
+                       WHERE translation_id=? AND chapter_title=? AND paragraph_index=?""",
+                    (p.translation_id, p.chapter_title, p.paragraph_index),
+                ).fetchone()
+                if row is not None:
+                    p.id = row["id"]
         else:
             conn.execute(
                 """UPDATE paragraphs SET translated_text=?, status=?, tokens_in=?,

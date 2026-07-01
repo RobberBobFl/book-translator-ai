@@ -1,14 +1,18 @@
 """Translation engine wrapping litellm with retry, cost tracking, and chunking."""
 
 import asyncio
+import logging
 import re
 from decimal import Decimal
+from typing import Any
 
 import litellm
 from litellm import exceptions as litellm_exc
 
 from translator.chunker import split_long_paragraph, merge_chunks
 from core.models import TranslationResult
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -24,6 +28,10 @@ class TranslationError(Exception):
         super().__init__(message)
 
 
+class CriticalTranslationError(Exception):
+    """Raised on critical errors (bad model, auth, etc.) that should stop all translation."""
+
+
 # ---------------------------------------------------------------------------
 # Engine
 # ---------------------------------------------------------------------------
@@ -35,8 +43,27 @@ class TranslatorEngine:
 
     BACKOFF_SECONDS = (2, 4, 8)  # retry delays
 
-    def __init__(self) -> None:
+    def __init__(self, config_manager: Any = None) -> None:
         self._client = litellm
+        self._config_manager = config_manager  # core.config.ConfigManager
+
+    # ------------------------------------------------------------------
+    # Provider lookup
+    # ------------------------------------------------------------------
+
+    def _get_provider_for_model(self, model_id: str) -> dict | None:
+        """Find provider config by extracting the provider prefix from model_id.
+
+        Returns a dict with keys ``api_key``, ``base_url``, or ``None``.
+        """
+        if self._config_manager is None:
+            return None
+        provider_id = model_id.split("/", 1)[0].lower()
+        providers = self._config_manager.load_providers()
+        for p in providers:
+            if p.id == provider_id:
+                return {"api_key": p.api_key, "base_url": p.base_url}
+        return None
 
     # ------------------------------------------------------------------
     # Public API
@@ -68,6 +95,31 @@ class TranslatorEngine:
         return await self._translate_once(
             messages, model_id, temperature, top_p, max_tokens, max_retries,
         )
+
+    async def validate_model(self, model_id: str) -> tuple[bool, str]:
+        """Test model with a minimal prompt.
+
+        Returns ``(True, "")`` on success or ``(False, error_message)``.
+        """
+        provider_cfg = self._get_provider_for_model(model_id)
+        api_key = provider_cfg["api_key"] if provider_cfg else None
+        base_url = provider_cfg["base_url"] if provider_cfg else None
+        try:
+            kwargs: dict = dict(
+                model=model_id,
+                messages=[{"role": "user", "content": "test"}],
+                max_tokens=1,
+            )
+            if api_key:
+                kwargs["api_key"] = api_key
+            if base_url:
+                kwargs["base_url"] = base_url
+            await self._client.acompletion(**kwargs)
+            return True, ""
+        except CriticalTranslationError as e:
+            return False, str(e)
+        except Exception as e:
+            return False, str(e)
 
     # ------------------------------------------------------------------
     # Cost helper (public for GUI usage)
@@ -115,16 +167,32 @@ class TranslatorEngine:
         max_tokens: int,
         max_retries: int,
     ) -> TranslationResult:
+        provider_cfg = self._get_provider_for_model(model_id)
+        api_key = provider_cfg["api_key"] if provider_cfg else None
+        base_url = provider_cfg["base_url"] if provider_cfg else None
+
+        logger.info(
+            "Translating | model=%s | api_key=%s... | base_url=%s",
+            model_id,
+            api_key[:10] if api_key else "None",
+            base_url or "None",
+        )
+
         last_exc: Exception | None = None
         for attempt in range(max_retries + 1):
             try:
-                response = await self._client.acompletion(
+                kwargs: dict = dict(
                     model=model_id,
                     messages=messages,
                     temperature=temperature,
                     top_p=top_p,
                     max_tokens=max_tokens,
                 )
+                if api_key:
+                    kwargs["api_key"] = api_key
+                if base_url:
+                    kwargs["base_url"] = base_url
+                response = await self._client.acompletion(**kwargs)
                 return self._parse_response(response, model_id)
 
             except litellm_exc.RateLimitError as e:
@@ -135,6 +203,13 @@ class TranslatorEngine:
                 last_exc = e
             except litellm_exc.APIError as e:
                 last_exc = e
+            except (
+                litellm_exc.BadRequestError,
+                litellm_exc.AuthenticationError,
+                litellm_exc.PermissionDeniedError,
+                litellm_exc.NotFoundError,
+            ) as e:
+                raise CriticalTranslationError(str(e)) from e
             except Exception as e:
                 # Unexpected errors — don't retry
                 raise TranslationError(str(e), retry_count=0) from e

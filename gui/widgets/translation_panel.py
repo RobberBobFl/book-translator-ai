@@ -11,6 +11,7 @@ from PyQt6.QtWidgets import (
     QLabel,
     QListWidget,
     QListWidgetItem,
+    QMessageBox,
     QPlainTextEdit,
     QProgressBar,
     QPushButton,
@@ -66,6 +67,7 @@ class TranslationPanel(QWidget):
         self._worker_mgr.all_finished.connect(self._on_all_finished)
         self._worker_mgr.needs_review.connect(self._on_needs_review)
         self._worker_mgr.paragraph_failed.connect(self._on_paragraph_failed)
+        self._worker_mgr.error_occurred.connect(self._on_error_occurred)
         self._worker_mgr.interim_cost_a.connect(self._update_cost_a)
         self._worker_mgr.interim_cost_b.connect(self._update_cost_b)
 
@@ -76,6 +78,7 @@ class TranslationPanel(QWidget):
 
         self._build_ui()
         self._connect_editor_signals()
+        self._refresh_model_combo()
         self._set_running_state(False)
 
     # ------------------------------------------------------------------
@@ -99,6 +102,11 @@ class TranslationPanel(QWidget):
         self._mode_combo.addItems(["auto", "interactive", "hybrid"])
         self._mode_combo.currentTextChanged.connect(self._on_mode_changed)
 
+        self._model_a_combo = QComboBox()
+        self._model_a_combo.setEditable(True)
+        self._model_a_combo.setPlaceholderText("Выберите модель...")
+        self._model_a_combo.currentTextChanged.connect(self._on_model_a_changed)
+
         self._start_btn = QPushButton("▶ Начать")
         self._start_btn.clicked.connect(self._on_start)
         self._pause_btn = QPushButton("⏸ Пауза")
@@ -111,6 +119,9 @@ class TranslationPanel(QWidget):
 
         ctrl_row.addWidget(QLabel("Режим:"))
         ctrl_row.addWidget(self._mode_combo)
+        ctrl_row.addSpacing(10)
+        ctrl_row.addWidget(QLabel("Модель:"))
+        ctrl_row.addWidget(self._model_a_combo)
         ctrl_row.addSpacing(20)
         ctrl_row.addWidget(self._start_btn)
         ctrl_row.addWidget(self._pause_btn)
@@ -203,6 +214,10 @@ class TranslationPanel(QWidget):
     def set_book(self, book_id: int | None) -> None:
         self._book_id = book_id
         self._start_btn.setEnabled(book_id is not None)
+
+    def refresh_models(self) -> None:
+        """Reload the model combo from providers — call when providers change."""
+        self._refresh_model_combo()
 
     def resume_session(
         self,
@@ -358,7 +373,7 @@ class TranslationPanel(QWidget):
         model_id: str | None = None,
     ) -> TranslationJob:
         return TranslationJob(
-            model_id=model_id or cfg.get("last_model_a", ""),
+            model_id=model_id or self._model_a_combo.currentText().strip(),
             temperature=Decimal(str(cfg.get("temperature", 0.3))),
             top_p=Decimal(str(cfg.get("top_p", 0.9))),
             max_tokens=int(cfg.get("max_tokens", 4096)),
@@ -369,6 +384,9 @@ class TranslationPanel(QWidget):
     def _create_paragraphs_for_translation(
         self, book, translation_id: int
     ) -> list[Paragraph]:
+        existing = self._db.get_paragraphs(translation_id)
+        if existing:
+            return existing
         paragraphs: list[Paragraph] = []
         for ch in book.chapters:
             for p in ch.paragraphs:
@@ -401,6 +419,30 @@ class TranslationPanel(QWidget):
         self._worker_mgr.stop()
         self.log("Перевод остановлен пользователем")
         self._set_running_state(False)
+
+    def _refresh_model_combo(self) -> None:
+        providers = self._cfg.load_providers()
+        models: list[str] = []
+        for p in providers:
+            for model_name in p.models:
+                full = f"{p.id}/{model_name}"
+                if full not in models:
+                    models.append(full)
+            if p.default_model:
+                full = f"{p.id}/{p.default_model}"
+                if full not in models:
+                    models.append(full)
+        models.sort()
+
+        cfg = self._cfg.load_app_config()
+        current = cfg.get("last_model_a", "") or self._model_a_combo.currentText()
+
+        self._model_a_combo.blockSignals(True)
+        self._model_a_combo.clear()
+        self._model_a_combo.addItems(models)
+        if current:
+            self._model_a_combo.setCurrentText(current)
+        self._model_a_combo.blockSignals(False)
 
     # ------------------------------------------------------------------
     # Hotkey actions
@@ -435,6 +477,11 @@ class TranslationPanel(QWidget):
         self._progress_a_bar.setMaximum(total)
         self._progress_a_bar.setValue(done)
 
+    def _on_model_a_changed(self, model_id: str) -> None:
+        cfg = self._cfg.load_app_config()
+        cfg["last_model_a"] = model_id
+        self._cfg.save_app_config(cfg)
+
     def _on_progress_b(self, done: int, total: int) -> None:
         self._progress_b_bar.setMaximum(total)
         self._progress_b_bar.setValue(done)
@@ -446,6 +493,11 @@ class TranslationPanel(QWidget):
         self.log("Перевод завершён")
         self._set_running_state(False)
         self.translation_finished.emit()
+
+    def _on_error_occurred(self, message: str) -> None:
+        QMessageBox.critical(self, "Критическая ошибка", f"Перевод остановлен:\n{message}")
+        self.log(f"Критическая ошибка: {message}")
+        self._set_running_state(False)
 
     def _on_needs_review(
         self, idx: int, original: str, translation: str

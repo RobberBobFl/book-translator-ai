@@ -37,7 +37,7 @@ class MainWindow(QMainWindow):
         self._db = Database(_DB_PATH)
         self._db.connect()
         self._db.initialize()
-        self._engine = TranslatorEngine()
+        self._engine = TranslatorEngine(self._cfg)
 
         # -- Panels ------------------------------------------------------
         from core.glossary import GlossaryManager
@@ -112,6 +112,9 @@ class MainWindow(QMainWindow):
         )
         self._translation_panel.translation_finished.connect(
             self._on_translation_finished
+        )
+        self._settings_panel.settings_changed.connect(
+            self._translation_panel.refresh_models
         )
 
     def _on_book_loaded(self, book_id: int) -> None:

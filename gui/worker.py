@@ -10,7 +10,11 @@ from core.glossary import GlossaryManager
 from core.models import Paragraph, TranslationJob
 from state.database import Database
 from translator.context_builder import build_context
-from translator.engine import TranslationError, TranslatorEngine
+from translator.engine import (
+    CriticalTranslationError,
+    TranslationError,
+    TranslatorEngine,
+)
 from translator.prompt_builder import build_messages
 
 logger = logging.getLogger(__name__)
@@ -35,6 +39,8 @@ class TranslationWorker(QObject):
     finished = pyqtSignal()
     # (paragraph_index, original_text, model_translation)
     needs_review = pyqtSignal(int, str, str)
+    # Critical error that stopped translation
+    error_occurred = pyqtSignal(str)
 
     def __init__(
         self,
@@ -117,6 +123,11 @@ class TranslationWorker(QObject):
             try:
                 await self._translate_one(para, idx, total)
             except asyncio.CancelledError:
+                break
+            except CriticalTranslationError as exc:
+                logger.error("Critical error on paragraph %d: %s", idx, exc)
+                self._stop_requested = True
+                self.error_occurred.emit(str(exc))
                 break
             except TranslationError as exc:
                 logger.warning("Paragraph %d failed after retries: %s", idx, exc)
@@ -288,6 +299,7 @@ class WorkerManager(QObject):
     interim_cost_b = pyqtSignal(int, int, float)
     paragraph_failed = pyqtSignal(int, str)  # index, error_message
     paragraph_done = pyqtSignal(int, int)  # index, paragraph_id
+    error_occurred = pyqtSignal(str)  # critical error message
 
     def __init__(self, db: Database, engine: TranslatorEngine) -> None:
         super().__init__()
@@ -400,6 +412,7 @@ class WorkerManager(QObject):
     ) -> None:
         worker.finished.connect(self._on_worker_finished)
         worker.needs_review.connect(self.needs_review.emit)
+        worker.error_occurred.connect(self.error_occurred.emit)
 
         if label == "A":
             worker.progress_changed.connect(self.progress_changed.emit)

@@ -110,7 +110,7 @@ class ComparisonPanel(QWidget):
             label = f"{book.title}  (id={book.id})"
             self._book_combo.addItem(label)
             self._book_map[label] = book.id
-        if current and current in self._book_combo:
+        if current and self._book_combo.findText(str(current)) != -1:
             self._book_combo.setCurrentText(current)
         self._book_combo.blockSignals(False)
 
