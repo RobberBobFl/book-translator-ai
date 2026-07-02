@@ -390,24 +390,13 @@ class _ProviderDialog(QDialog):
         form.addRow("API Base URL:", self._url_edit)
         form.addRow("API Key:", self._key_edit)
 
-        # Button to load models (generic API)
-        btn_row = QHBoxLayout()
-        self._load_models_btn = QPushButton("⬇ Загрузить модели")
-        self._load_models_btn.setToolTip("Запросить список моделей через API (/models)")
-        self._load_models_btn.clicked.connect(self._on_load_models)
-        btn_row.addWidget(self._load_models_btn)
-
         # Ollama-specific button
+        btn_row = QHBoxLayout()
         self._load_ollama_btn = QPushButton("📥 Загрузить модели Ollama")
         self._load_ollama_btn.setToolTip("Получить список моделей из локального Ollama (localhost:11434)")
         self._load_ollama_btn.clicked.connect(self._on_load_ollama_models)
         self._load_ollama_btn.setVisible(False)  # Show only for Ollama URLs
         btn_row.addWidget(self._load_ollama_btn)
-
-        self._models_label = QLabel(
-            f"Моделей сохранено: {len(self._loaded_models)}"
-        )
-        btn_row.addWidget(self._models_label)
         btn_row.addStretch()
         form.addRow("", btn_row)
 
@@ -442,98 +431,6 @@ class _ProviderDialog(QDialog):
     # ------------------------------------------------------------------
     # Load models from API
     # ------------------------------------------------------------------
-
-    def _on_load_models(self) -> None:
-        url = self._url_edit.text().strip().rstrip("/")
-        if not url:
-            QMessageBox.warning(self, "Ошибка", "Сначала укажите API Base URL")
-            return
-        api_key = self._key_edit.text().strip()
-
-        models_url = f"{url}/models"
-
-        try:
-            import json
-            import urllib.request
-
-            req = urllib.request.Request(models_url)
-            req.add_header("User-Agent", "book-translator/0.1")
-            if api_key:
-                req.add_header("Authorization", f"Bearer {api_key}")
-
-            with urllib.request.urlopen(req, timeout=15) as resp:
-                data = json.loads(resp.read().decode())
-
-            parsed = self._parse_models_response(data)
-            if not parsed:
-                QMessageBox.information(
-                    self, "Нет моделей",
-                    "API не вернул список моделей.\n",
-                )
-                return
-
-            self._loaded_models = {
-                name: ModelPricing(input_cost_per_1k=0, output_cost_per_1k=0)
-                for name in parsed
-            }
-            self._models_label.setText(
-                f"Моделей сохранено: {len(self._loaded_models)}"
-            )
-            QMessageBox.information(
-                self, "Готово",
-                f"Загружено {len(parsed)} моделей.\n"
-                "Выберите нужную в настройках (Model A / Model B).",
-            )
-
-        except Exception as exc:
-            QMessageBox.warning(
-                self, "Ошибка загрузки",
-                f"Не удалось получить список моделей:\n{exc}",
-            )
-
-    @staticmethod
-    def _parse_models_response(data) -> list[str]:
-        """Try different response formats to extract model IDs."""
-        # Format 1: {data: [{id: "model-name", ...}, ...]}  (OpenRouter)
-        if isinstance(data, dict) and "data" in data:
-            items = data["data"]
-            if isinstance(items, list):
-                ids = []
-                for item in items:
-                    if isinstance(item, dict) and "id" in item:
-                        ids.append(str(item["id"]))
-                if ids:
-                    return sorted(ids)
-
-        # Format 2: [{id: "model-name", ...}, ...]  (plain list)
-        if isinstance(data, list):
-            ids = []
-            for item in data:
-                if isinstance(item, dict) and "id" in item:
-                    ids.append(str(item["id"]))
-            if ids:
-                return sorted(ids)
-
-        # Format 3: {object: "list", data: [...]}  (OpenAI format)
-        if isinstance(data, dict):
-            for key in ("data", "models", "items", "result"):
-                val = data.get(key)
-                if isinstance(val, list):
-                    ids = []
-                    for item in val:
-                        if isinstance(item, dict):
-                            for id_key in ("id", "name", "model", "model_id"):
-                                if id_key in item:
-                                    ids.append(str(item[id_key]))
-                                    break
-                    if ids:
-                        return sorted(ids)
-
-        # Flat list of strings
-        if isinstance(data, list) and all(isinstance(x, str) for x in data):
-            return sorted(data)
-
-        return []
 
     # ------------------------------------------------------------------
     # Ollama-specific model loading
@@ -600,7 +497,6 @@ class _ProviderDialog(QDialog):
                         input_cost_per_1k=0, output_cost_per_1k=0
                     )
                 }
-                self._models_label.setText(f"Выбрано: ollama/{model}")
                 QMessageBox.information(
                     self,
                     "Готово",
