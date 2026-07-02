@@ -9,6 +9,7 @@ from PyQt6.QtWidgets import (
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QListWidget,
@@ -26,14 +27,6 @@ from core.models import Provider, ModelPricing
 
 _STYLE_OPTIONS = ["дословный", "литературный", "адаптированный"]
 _LANGUAGE_OPTIONS = ["русский", "английский"]
-
-_MODEL_PRESETS = [
-    "gpt-4o", "gpt-4o-mini", "gpt-4", "gpt-3.5-turbo",
-    "claude-3-5-sonnet-20241022", "claude-3-haiku-20240307",
-    "deepseek-chat", "deepseek-reasoner",
-    "llama3.1", "llama3.2", "mistral", "mixtral",
-    "gemini/gemini-1.5-pro", "gemini/gemini-1.5-flash",
-]
 
 
 class SettingsPanel(QWidget):
@@ -221,7 +214,7 @@ class SettingsPanel(QWidget):
         self._provider_list.blockSignals(False)
 
     def _populate_model_combos(self) -> None:
-        models: list[str] = list(_MODEL_PRESETS)
+        models: list[str] = []
         for p in self._providers:
             for model_name in p.models:
                 full = f"{p.id}/{model_name}"
@@ -239,8 +232,8 @@ class SettingsPanel(QWidget):
 
         self._model_a_combo.clear()
         self._model_b_combo.clear()
-        self._model_a_combo.addItems(models)
-        self._model_b_combo.addItems(models)
+        self._model_a_combo.addItems(sorted(models))
+        self._model_b_combo.addItems(sorted(models))
 
         if current_a:
             self._model_a_combo.setCurrentText(current_a)
@@ -397,12 +390,20 @@ class _ProviderDialog(QDialog):
         form.addRow("API Base URL:", self._url_edit)
         form.addRow("API Key:", self._key_edit)
 
-        # Button to load models
+        # Button to load models (generic API)
         btn_row = QHBoxLayout()
         self._load_models_btn = QPushButton("⬇ Загрузить модели")
-        self._load_models_btn.setToolTip("Запросить список моделей через API")
+        self._load_models_btn.setToolTip("Запросить список моделей через API (/models)")
         self._load_models_btn.clicked.connect(self._on_load_models)
         btn_row.addWidget(self._load_models_btn)
+
+        # Ollama-specific button
+        self._load_ollama_btn = QPushButton("📥 Загрузить модели Ollama")
+        self._load_ollama_btn.setToolTip("Получить список моделей из локального Ollama (localhost:11434)")
+        self._load_ollama_btn.clicked.connect(self._on_load_ollama_models)
+        self._load_ollama_btn.setVisible(False)  # Show only for Ollama URLs
+        btn_row.addWidget(self._load_ollama_btn)
+
         self._models_label = QLabel(
             f"Моделей сохранено: {len(self._loaded_models)}"
         )
@@ -411,6 +412,10 @@ class _ProviderDialog(QDialog):
         form.addRow("", btn_row)
 
         layout.addLayout(form)
+
+        # Track URL changes to show/hide Ollama button
+        self._url_edit.textChanged.connect(self._on_url_changed)
+        self._on_url_changed(self._url_edit.text())
 
         btn_row2 = QHBoxLayout()
         self._ok_btn = QPushButton("OK")
@@ -529,6 +534,86 @@ class _ProviderDialog(QDialog):
             return sorted(data)
 
         return []
+
+    # ------------------------------------------------------------------
+    # Ollama-specific model loading
+    # ------------------------------------------------------------------
+
+    def _on_url_changed(self, text: str) -> None:
+        """Show/hide Ollama load button and auto-fill name."""
+        url = text.strip().lower()
+        is_ollama = "localhost:11434" in url or "127.0.0.1:11434" in url
+        self._load_ollama_btn.setVisible(is_ollama)
+        if is_ollama and self._provider is None and not self._name_edit.text().strip():
+            self._name_edit.setText("ollama")
+
+    def _on_load_ollama_models(self) -> None:
+        """Fetch models from local Ollama instance."""
+        url = self._url_edit.text().strip().rstrip("/")
+        if not url:
+            QMessageBox.warning(self, "Ошибка", "Сначала укажите API Base URL")
+            return
+
+        base_url = url
+        if base_url.endswith("/v1"):
+            base_url = base_url[:-3]
+
+        try:
+            import json
+            import urllib.request
+
+            req = urllib.request.Request(f"{base_url}/api/tags")
+            req.add_header("User-Agent", "book-translator/0.1")
+
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                if resp.status != 200:
+                    raise Exception(f"HTTP {resp.status}: {resp.read().decode()}")
+                data = json.loads(resp.read().decode())
+
+            models = []
+            for m in data.get("models", []):
+                name = m.get("name") or m.get("model")
+                if name:
+                    name = name.replace(":latest", "")
+                    models.append(name)
+
+            if not models:
+                QMessageBox.information(
+                    self, "Нет моделей",
+                    "Ollama не вернул список моделей.\n"
+                    "Убедитесь: 1) ollama serve запущен, 2) есть модели (ollama list)"
+                )
+                return
+
+            model, ok = QInputDialog.getItem(
+                self,
+                "Выберите модель Ollama",
+                "Доступные модели:",
+                sorted(models),
+                0,
+                False,
+            )
+
+            if ok and model:
+                self._loaded_models = {
+                    model: ModelPricing(
+                        input_cost_per_1k=0, output_cost_per_1k=0
+                    )
+                }
+                self._models_label.setText(f"Выбрано: ollama/{model}")
+                QMessageBox.information(
+                    self,
+                    "Готово",
+                    f"Модель выбрана: ollama/{model}\nНажмите OK для сохранения.",
+                )
+
+        except Exception as exc:
+            QMessageBox.warning(
+                self,
+                "Ошибка",
+                f"Не удалось загрузить модели Ollama:\n{exc}\n\n"
+                f"Проверьте: 1) ollama serve, 2) URL: {base_url}, 3) ollama list",
+            )
 
     # ------------------------------------------------------------------
     # Validation & result
