@@ -11,6 +11,7 @@ from litellm import exceptions as litellm_exc
 
 from translator.chunker import split_long_paragraph, merge_chunks
 from core.models import TranslationResult
+from core.config import normalize_model_name
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +64,16 @@ class TranslatorEngine:
         for p in providers:
             if p.id == provider_id:
                 return {"api_key": p.api_key, "base_url": p.base_url}
+        # Fallback: try normalising an unprefixed model name
+        if "/" not in model_id:
+            for p in providers:
+                if model_id in p.models:
+                    return {"api_key": p.api_key, "base_url": p.base_url}
+                normalised = normalize_model_name(p.base_url, model_id)
+                if normalised.startswith(f"{p.id}/"):
+                    stripped = normalised.split("/", 1)[1]
+                    if stripped != model_id and stripped in p.models:
+                        return {"api_key": p.api_key, "base_url": p.base_url}
         return None
 
     # ------------------------------------------------------------------

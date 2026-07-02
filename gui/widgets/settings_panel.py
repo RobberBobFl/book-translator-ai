@@ -9,6 +9,7 @@ from PyQt6.QtWidgets import (
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
+    QLabel,
     QLineEdit,
     QListWidget,
     QListWidgetItem,
@@ -19,11 +20,12 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from core.config import ConfigManager
+from core.config import ConfigManager, normalize_model_name
 from core.models import Provider, ModelPricing
 
 
 _STYLE_OPTIONS = ["дословный", "литературный", "адаптированный"]
+_LANGUAGE_OPTIONS = ["русский", "английский"]
 
 _MODEL_PRESETS = [
     "gpt-4o", "gpt-4o-mini", "gpt-4", "gpt-3.5-turbo",
@@ -136,10 +138,15 @@ class SettingsPanel(QWidget):
         self._style_combo.addItems(_STYLE_OPTIONS)
         self._style_combo.currentTextChanged.connect(self._on_setting_changed)
 
+        self._lang_combo = QComboBox()
+        self._lang_combo.addItems(_LANGUAGE_OPTIONS)
+        self._lang_combo.currentTextChanged.connect(self._on_setting_changed)
+
         param_layout.addRow("Temperature:", self._temp_spin)
         param_layout.addRow("Top-p:", self._top_p_spin)
         param_layout.addRow("Max tokens:", self._max_tokens_spin)
         param_layout.addRow("Стиль:", self._style_combo)
+        param_layout.addRow("Язык перевода:", self._lang_combo)
 
         outer.addWidget(param_group)
         outer.addStretch()
@@ -161,6 +168,7 @@ class SettingsPanel(QWidget):
         self._top_p_spin.setValue(float(cfg.get("top_p", 0.9)))
         self._max_tokens_spin.setValue(int(cfg.get("max_tokens", 4096)))
         self._style_combo.setCurrentText(cfg.get("style", "литературный"))
+        self._lang_combo.setCurrentText(cfg.get("target_language", "русский"))
 
         # Model combos
         self._populate_model_combos()
@@ -182,9 +190,17 @@ class SettingsPanel(QWidget):
         cfg["top_p"] = self._top_p_spin.value()
         cfg["max_tokens"] = self._max_tokens_spin.value()
         cfg["style"] = self._style_combo.currentText()
-        cfg["last_model_a"] = self._model_a_combo.currentText()
-        cfg["last_model_b"] = self._model_b_combo.currentText()
+        cfg["target_language"] = self._lang_combo.currentText()
+        cfg["last_model_a"] = self._model_a_combo.currentText().strip()
+        cfg["last_model_b"] = self._model_b_combo.currentText().strip()
         cfg["comparison_enabled"] = self._compare_check.isChecked()
+        # Normalise model names that lack a provider prefix
+        for key in ("last_model_a", "last_model_b"):
+            val = cfg.get(key, "")
+            if val and "/" not in val:
+                provider = self._get_selected_provider()
+                if provider:
+                    cfg[key] = normalize_model_name(provider.base_url, val)
         if self._provider_list.currentRow() >= 0:
             selected = self._providers[self._provider_list.currentRow()]
             cfg["last_provider_id"] = selected.id
@@ -198,7 +214,8 @@ class SettingsPanel(QWidget):
         self._provider_list.blockSignals(True)
         self._provider_list.clear()
         for p in self._providers:
-            item = QListWidgetItem(f"{p.name}  ({p.default_model})")
+            label = f"{p.name}" + (f"  ({p.default_model})" if p.default_model else "")
+            item = QListWidgetItem(label)
             item.setData(1, p.id)  # store provider id
             self._provider_list.addItem(item)
         self._provider_list.blockSignals(False)
@@ -307,6 +324,12 @@ class SettingsPanel(QWidget):
     # Public getters
     # ------------------------------------------------------------------
 
+    def _get_selected_provider(self) -> Provider | None:
+        row = self._provider_list.currentRow()
+        if 0 <= row < len(self._providers):
+            return self._providers[row]
+        return None
+
     def get_model_a(self) -> str:
         return self._model_a_combo.currentText().strip()
 
@@ -335,7 +358,12 @@ class SettingsPanel(QWidget):
 
 
 class _ProviderDialog(QDialog):
-    """Dialog for adding/editing a provider with dynamic model list."""
+    """Dialog for adding/editing a provider.
+
+    User enters name, URL and API key.  The "Load Models" button
+    fetches the model list directly from the provider API and stores it
+    — no per-dialog model selection.
+    """
 
     def __init__(
         self,
@@ -346,6 +374,7 @@ class _ProviderDialog(QDialog):
         self.setWindowTitle("Провайдер" if provider is None else "Редактировать провайдера")
         self.setMinimumWidth(480)
         self._provider = provider
+        self._loaded_models: dict[str, ModelPricing] = {}
 
         self._name_edit = QLineEdit()
         self._name_edit.textChanged.connect(self._on_name_changed)
@@ -355,22 +384,11 @@ class _ProviderDialog(QDialog):
         self._key_edit = QLineEdit()
         self._key_edit.setEchoMode(QLineEdit.EchoMode.Password)
 
-        self._model_combo = QComboBox()
-        self._model_combo.setEditable(True)
-        self._model_combo.setPlaceholderText("Введите название модели...")
-
-        # Populate combo with provider's existing models if editing
-        if provider is not None and provider.models:
-            for model_name in provider.models:
-                self._model_combo.addItem(model_name)
         if provider is not None:
             self._name_edit.setText(provider.name)
             self._url_edit.setText(provider.base_url)
             self._key_edit.setText(provider.api_key or "")
-            if provider.default_model and provider.default_model in [
-                self._model_combo.itemText(i) for i in range(self._model_combo.count())
-            ]:
-                self._model_combo.setCurrentText(provider.default_model)
+            self._loaded_models = dict(provider.models)
 
         layout = QVBoxLayout()
         form = QFormLayout()
@@ -379,26 +397,30 @@ class _ProviderDialog(QDialog):
         form.addRow("API Base URL:", self._url_edit)
         form.addRow("API Key:", self._key_edit)
 
-        # Model row with load button
-        model_row = QHBoxLayout()
-        model_row.addWidget(self._model_combo, 1)
-        self._load_models_btn = QPushButton("⬇ Загрузить")
+        # Button to load models
+        btn_row = QHBoxLayout()
+        self._load_models_btn = QPushButton("⬇ Загрузить модели")
         self._load_models_btn.setToolTip("Запросить список моделей через API")
         self._load_models_btn.clicked.connect(self._on_load_models)
-        model_row.addWidget(self._load_models_btn)
-        form.addRow("Модель:", model_row)
+        btn_row.addWidget(self._load_models_btn)
+        self._models_label = QLabel(
+            f"Моделей сохранено: {len(self._loaded_models)}"
+        )
+        btn_row.addWidget(self._models_label)
+        btn_row.addStretch()
+        form.addRow("", btn_row)
 
         layout.addLayout(form)
 
-        btn_row = QHBoxLayout()
+        btn_row2 = QHBoxLayout()
         self._ok_btn = QPushButton("OK")
         self._ok_btn.clicked.connect(self._on_ok)
         self._cancel_btn = QPushButton("Отмена")
         self._cancel_btn.clicked.connect(self.reject)
-        btn_row.addStretch()
-        btn_row.addWidget(self._ok_btn)
-        btn_row.addWidget(self._cancel_btn)
-        layout.addLayout(btn_row)
+        btn_row2.addStretch()
+        btn_row2.addWidget(self._ok_btn)
+        btn_row2.addWidget(self._cancel_btn)
+        layout.addLayout(btn_row2)
 
         self.setLayout(layout)
 
@@ -441,26 +463,27 @@ class _ProviderDialog(QDialog):
             if not parsed:
                 QMessageBox.information(
                     self, "Нет моделей",
-                    "API не вернул список моделей.\n"
-                    "Введите название модели вручную.",
+                    "API не вернул список моделей.\n",
                 )
                 return
 
-            self._model_combo.blockSignals(True)
-            self._model_combo.clear()
-            self._model_combo.addItems(parsed)
-            self._model_combo.blockSignals(False)
+            self._loaded_models = {
+                name: ModelPricing(input_cost_per_1k=0, output_cost_per_1k=0)
+                for name in parsed
+            }
+            self._models_label.setText(
+                f"Моделей сохранено: {len(self._loaded_models)}"
+            )
             QMessageBox.information(
                 self, "Готово",
                 f"Загружено {len(parsed)} моделей.\n"
-                "Выберите нужную или введите свою.",
+                "Выберите нужную в настройках (Model A / Model B).",
             )
 
         except Exception as exc:
             QMessageBox.warning(
                 self, "Ошибка загрузки",
-                f"Не удалось получить список моделей:\n{exc}\n\n"
-                "Введите название модели вручную.",
+                f"Не удалось получить список моделей:\n{exc}",
             )
 
     @staticmethod
@@ -526,31 +549,14 @@ class _ProviderDialog(QDialog):
             if self._provider
             else self._name_edit.text().strip().lower().replace(" ", "_")
         )
-        model_name = self._model_combo.currentText().strip()
-        if not model_name:
-            model_name = "gpt-4o"
-
-        # Collect all entries from the combo as model keys
-        models: dict[str, ModelPricing] = {}
-        for i in range(self._model_combo.count()):
-            name = self._model_combo.itemText(i).strip()
-            if name:
-                pricing = (
-                    self._provider.models[name]
-                    if self._provider and name in self._provider.models
-                    else ModelPricing(input_cost_per_1k=0, output_cost_per_1k=0)
-                )
-                models[name] = pricing
-
-        # Ensure current selection is included
-        if model_name not in models:
-            models[model_name] = ModelPricing(input_cost_per_1k=0, output_cost_per_1k=0)
+        name = self._name_edit.text().strip()
+        url = self._url_edit.text().strip()
 
         return Provider(
             id=_id,
-            name=self._name_edit.text().strip(),
-            base_url=self._url_edit.text().strip(),
+            name=name,
+            base_url=url,
             api_key=self._key_edit.text().strip() or None,
-            models=models,
-            default_model=model_name,
+            models=self._loaded_models,
+            default_model="",
         )

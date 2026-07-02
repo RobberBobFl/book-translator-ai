@@ -16,6 +16,7 @@ from translator.engine import (
     TranslatorEngine,
 )
 from translator.prompt_builder import build_messages
+from utils.lang_utils import detect_source_language
 
 logger = logging.getLogger(__name__)
 
@@ -75,6 +76,8 @@ class TranslationWorker(QObject):
         self._total_tokens_out = 0
         self._total_cost = Decimal("0")
 
+        self._source_language: str | None = None  # lazy cache
+
     # ------------------------------------------------------------------
     # Public control
     # ------------------------------------------------------------------
@@ -101,6 +104,60 @@ class TranslationWorker(QObject):
         self._rephrase_requested = True
         if self._review_future is not None and not self._review_future.done():
             self._review_future.set_result(None)
+
+    async def translate_paragraph(self, idx: int) -> None:
+        if not (0 <= idx < len(self._paragraphs)):
+            return
+        para = self._paragraphs[idx]
+
+        if self._source_language is None:
+            text = " ".join(p.original_text for p in self._paragraphs)
+            self._source_language = detect_source_language(text)
+
+        glossary_block = ""
+        if self._glossary_mgr is not None:
+            try:
+                glossary_block = self._glossary_mgr.format_for_prompt(self._book_id)
+            except Exception:
+                logger.exception("Failed to build glossary block")
+
+        context = build_context(self._paragraphs, idx, n=2)
+
+        messages = build_messages(
+            original_text=para.original_text,
+            context_block=context,
+            glossary_block=glossary_block,
+            style=self._job.style,
+            source_language=self._source_language,
+            target_language=self._job.target_language,
+        )
+
+        result = await self._engine.translate(
+            messages=messages,
+            model_id=self._job.model_id,
+            temperature=float(self._job.temperature),
+            top_p=float(self._job.top_p),
+            max_tokens=self._job.max_tokens,
+        )
+
+        para.translated_text = result.text
+        para.tokens_in = result.tokens_in
+        para.tokens_out = result.tokens_out
+        para.cost_usd = result.cost_usd
+        para.model_id = result.model_id
+        para.retry_count = 0
+        para.error_message = None
+
+        para.status = "completed"
+        self._db.save_paragraph(para)
+
+        self._total_tokens_in += result.tokens_in
+        self._total_tokens_out += result.tokens_out
+        self._total_cost += result.cost_usd
+
+        self.paragraph_done.emit(idx, para.id)
+        self.progress_changed.emit(idx + 1, len(self._paragraphs))
+        self.interim_cost.emit(self._total_tokens_in, self._total_tokens_out, self._total_cost)
 
     # ------------------------------------------------------------------
     # Main loop (while-loop for back navigation)
@@ -159,6 +216,10 @@ class TranslationWorker(QObject):
         para.status = "translating"
         self._db.save_paragraph(para)
 
+        if self._source_language is None:
+            text = " ".join(p.original_text for p in self._paragraphs)
+            self._source_language = detect_source_language(text)
+
         # Allow multiple rephrase attempts
         while True:
             self._rephrase_requested = False
@@ -179,6 +240,8 @@ class TranslationWorker(QObject):
                 context_block=context,
                 glossary_block=glossary_block,
                 style=self._job.style,
+                source_language=self._source_language,
+                target_language=self._job.target_language,
             )
 
             result = await self._engine.translate(
@@ -395,6 +458,16 @@ class WorkerManager(QObject):
             self._worker_a.rephrase()
         elif model == "B" and self._worker_b:
             self._worker_b.rephrase()
+
+    def translate_paragraph(self, idx: int, model: str = "A") -> None:
+        """Translate a specific paragraph on demand (e.g., from review panel)."""
+        if model == "A" and self._worker_a:
+            # Schedule the async translate_paragraph call
+            loop = asyncio.get_event_loop()
+            loop.create_task(self._worker_a.translate_paragraph(idx))
+        elif model == "B" and self._worker_b:
+            loop = asyncio.get_event_loop()
+            loop.create_task(self._worker_b.translate_paragraph(idx))
 
     @property
     def is_running(self) -> bool:

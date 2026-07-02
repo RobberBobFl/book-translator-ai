@@ -38,6 +38,7 @@ _DEFAULT_CONFIG: dict[str, Any] = {
     "max_tokens": 4096,
     "style": "литературный",
     "last_provider_id": "ollama",
+    "target_language": "русский",
 }
 
 
@@ -109,7 +110,10 @@ class ConfigManager:
         if not _APP_CONFIG_FILE.exists():
             self._write_json(_APP_CONFIG_FILE, _DEFAULT_CONFIG)
             return dict(_DEFAULT_CONFIG)
-        return self._read_json(_APP_CONFIG_FILE, _DEFAULT_CONFIG)
+        data = self._read_json(_APP_CONFIG_FILE, _DEFAULT_CONFIG)
+        merged = dict(_DEFAULT_CONFIG)
+        merged.update(data)
+        return merged
 
     def save_app_config(self, config: dict[str, Any]) -> None:
         merged = dict(_DEFAULT_CONFIG)
@@ -133,3 +137,45 @@ class ConfigManager:
         with open(path, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
         os.chmod(path, 0o600)
+
+
+# ======================================================================
+# Model name normalisation — add provider prefix if missing
+# ======================================================================
+
+_URL_TO_PREFIX: dict[str, str] = {
+    "openrouter.ai": "openrouter",
+    "api.openai.com": "openai",
+    "api.anthropic.com": "anthropic",
+    "api.deepseek.com": "deepseek",
+    "api.groq.com": "groq",
+    "api.together.xyz": "together_ai",
+    "localhost:11434": "ollama",
+}
+
+_KNOWN_PREFIXES = set(_URL_TO_PREFIX.values())
+
+
+def normalize_model_name(base_url: str, model_name: str) -> str:
+    """Ensure a model name has a provider prefix.
+
+    Examples::
+
+        >>> normalize_model_name("https://api.openai.com/v1", "gpt-4o")
+        "openai/gpt-4o"
+        >>> normalize_model_name("https://openrouter.ai/api/v1", "nvidia/nemotron")
+        "openrouter/nvidia/nemotron"
+        >>> normalize_model_name("", "openrouter/gpt-4o")
+        "openrouter/gpt-4o"
+    """
+    if not model_name:
+        return model_name
+    if "/" in model_name:
+        prefix = model_name.split("/", 1)[0]
+        if prefix in _KNOWN_PREFIXES:
+            return model_name
+    if base_url:
+        for domain, prefix in _URL_TO_PREFIX.items():
+            if domain in base_url:
+                return f"{prefix}/{model_name}"
+    return model_name

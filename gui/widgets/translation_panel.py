@@ -78,7 +78,7 @@ class TranslationPanel(QWidget):
 
         self._build_ui()
         self._connect_editor_signals()
-        self._refresh_model_combo()
+        self._update_model_label()
         self._set_running_state(False)
 
     # ------------------------------------------------------------------
@@ -102,10 +102,8 @@ class TranslationPanel(QWidget):
         self._mode_combo.addItems(["auto", "interactive", "hybrid"])
         self._mode_combo.currentTextChanged.connect(self._on_mode_changed)
 
-        self._model_a_combo = QComboBox()
-        self._model_a_combo.setEditable(True)
-        self._model_a_combo.setPlaceholderText("Выберите модель...")
-        self._model_a_combo.currentTextChanged.connect(self._on_model_a_changed)
+        self._model_label = QLabel("Модель: —")
+        self._model_label.setStyleSheet("font-weight: bold;")
 
         self._start_btn = QPushButton("▶ Начать")
         self._start_btn.clicked.connect(self._on_start)
@@ -120,8 +118,7 @@ class TranslationPanel(QWidget):
         ctrl_row.addWidget(QLabel("Режим:"))
         ctrl_row.addWidget(self._mode_combo)
         ctrl_row.addSpacing(10)
-        ctrl_row.addWidget(QLabel("Модель:"))
-        ctrl_row.addWidget(self._model_a_combo)
+        ctrl_row.addWidget(self._model_label)
         ctrl_row.addSpacing(20)
         ctrl_row.addWidget(self._start_btn)
         ctrl_row.addWidget(self._pause_btn)
@@ -206,6 +203,7 @@ class TranslationPanel(QWidget):
         self._editor.back_requested.connect(self._on_review_back)
         self._editor.skip_requested.connect(self._on_review_skip)
         self._editor.rephrase_requested.connect(self._on_review_rephrase)
+        self._editor.translate_requested.connect(self._on_review_translate)
 
     # ------------------------------------------------------------------
     # Public API
@@ -216,8 +214,8 @@ class TranslationPanel(QWidget):
         self._start_btn.setEnabled(book_id is not None)
 
     def refresh_models(self) -> None:
-        """Reload the model combo from providers — call when providers change."""
-        self._refresh_model_combo()
+        """Called when providers change — updates the read-only model label."""
+        self._update_model_label()
 
     def resume_session(
         self,
@@ -373,12 +371,13 @@ class TranslationPanel(QWidget):
         model_id: str | None = None,
     ) -> TranslationJob:
         return TranslationJob(
-            model_id=model_id or self._model_a_combo.currentText().strip(),
+            model_id=model_id or cfg.get("last_model_a", ""),
             temperature=Decimal(str(cfg.get("temperature", 0.3))),
             top_p=Decimal(str(cfg.get("top_p", 0.9))),
             max_tokens=int(cfg.get("max_tokens", 4096)),
             style=cfg.get("style", "литературный"),
             mode=mode,
+            target_language=cfg.get("target_language", "русский"),
         )
 
     def _create_paragraphs_for_translation(
@@ -420,29 +419,10 @@ class TranslationPanel(QWidget):
         self.log("Перевод остановлен пользователем")
         self._set_running_state(False)
 
-    def _refresh_model_combo(self) -> None:
-        providers = self._cfg.load_providers()
-        models: list[str] = []
-        for p in providers:
-            for model_name in p.models:
-                full = f"{p.id}/{model_name}"
-                if full not in models:
-                    models.append(full)
-            if p.default_model:
-                full = f"{p.id}/{p.default_model}"
-                if full not in models:
-                    models.append(full)
-        models.sort()
-
+    def _update_model_label(self) -> None:
         cfg = self._cfg.load_app_config()
-        current = cfg.get("last_model_a", "") or self._model_a_combo.currentText()
-
-        self._model_a_combo.blockSignals(True)
-        self._model_a_combo.clear()
-        self._model_a_combo.addItems(models)
-        if current:
-            self._model_a_combo.setCurrentText(current)
-        self._model_a_combo.blockSignals(False)
+        model = cfg.get("last_model_a", "").strip()
+        self._model_label.setText(f"Модель: {model}" if model else "Модель: —")
 
     # ------------------------------------------------------------------
     # Hotkey actions
@@ -477,11 +457,6 @@ class TranslationPanel(QWidget):
         self._progress_a_bar.setMaximum(total)
         self._progress_a_bar.setValue(done)
 
-    def _on_model_a_changed(self, model_id: str) -> None:
-        cfg = self._cfg.load_app_config()
-        cfg["last_model_a"] = model_id
-        self._cfg.save_app_config(cfg)
-
     def _on_progress_b(self, done: int, total: int) -> None:
         self._progress_b_bar.setMaximum(total)
         self._progress_b_bar.setValue(done)
@@ -503,7 +478,7 @@ class TranslationPanel(QWidget):
         self, idx: int, original: str, translation: str
     ) -> None:
         self._current_review_idx = idx
-        self._editor.set_content(original, translation)
+        self._editor.set_content(original, translation, idx)
         self._editor.show()
 
     def _on_paragraph_done(self, idx: int, paragraph_id: int) -> None:
@@ -550,6 +525,13 @@ class TranslationPanel(QWidget):
         self._editor.hide()
         self._current_review_idx = None
 
+    def _on_review_translate(self) -> None:
+        idx = self._editor.current_review_idx if hasattr(self._editor, 'current_review_idx') else None
+        if idx is not None and idx >= 0 and idx < len(self._paragraphs_a):
+            self._worker_mgr.translate_paragraph(idx)
+        self._editor.hide()
+        self._current_review_idx = None
+
     # ------------------------------------------------------------------
     # Side panel
     # ------------------------------------------------------------------
@@ -562,9 +544,9 @@ class TranslationPanel(QWidget):
             return
         para = self._paragraphs_a[idx]
         if para.translated_text:
-            self._editor.set_content(para.original_text, para.translated_text)
+            self._editor.set_content(para.original_text, para.translated_text, idx)
         else:
-            self._editor.set_content(para.original_text, "")
+            self._editor.set_content(para.original_text, "", idx)
         self._current_review_idx = idx
         self._editor.show()
 

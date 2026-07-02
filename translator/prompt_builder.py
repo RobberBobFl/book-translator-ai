@@ -57,12 +57,17 @@ _STYLE_RULES: dict[Style, str] = {
 def build_system_prompt(
     glossary_block: str = "",
     style: Style = "литературный",
+    source_language: str = "",
+    target_language: str = "",
 ) -> str:
     """Build the system prompt that defines the translator role, style,
-    glossary constraints, and output rules."""
+    glossary constraints, output rules, and language pair."""
 
     parts: list[str] = [
         _STYLE_ROLE[style],
+        "",
+        f"### Language direction",
+        f"Translate from {source_language or 'the source language'} to {target_language or 'the target language'}.",
         "",
         "### Translation rules",
         _STYLE_RULES[style],
@@ -108,6 +113,8 @@ def build_messages(
     context_block: str = "",
     glossary_block: str = "",
     style: Style = "литературный",
+    source_language: str = "",
+    target_language: str = "",
 ) -> list[dict[str, str]]:
     """Return a complete message list suitable for ``litellm.completion()``.
 
@@ -118,6 +125,8 @@ def build_messages(
             context_block=context_builder.build_context(...),
             glossary_block=glossary_manager.format_for_prompt(book_id),
             style="литературный",
+            source_language="английский",
+            target_language="русский",
         )
         response = await litellm.completion(
             model=model_id,
@@ -126,6 +135,14 @@ def build_messages(
         )
     """
     return [
-        {"role": "system", "content": build_system_prompt(glossary_block, style)},
+        {
+            "role": "system",
+            "content": build_system_prompt(
+                glossary_block,
+                style,
+                source_language=source_language,
+                target_language=target_language,
+            ),
+        },
         {"role": "user", "content": build_user_prompt(original_text, context_block)},
     ]

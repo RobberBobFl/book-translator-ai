@@ -19,6 +19,7 @@ class ParagraphEditor(QWidget):
     back_requested = pyqtSignal()
     skip_requested = pyqtSignal()
     rephrase_requested = pyqtSignal()
+    translate_requested = pyqtSignal(int)  # (paragraph_id)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -62,6 +63,10 @@ class ParagraphEditor(QWidget):
         self._rephrase_btn.clicked.connect(self._on_rephrase)
         nav_row.addWidget(self._rephrase_btn)
 
+        self._translate_btn = QPushButton("🌐 Перевести")
+        self._translate_btn.clicked.connect(self._on_translate)
+        nav_row.addWidget(self._translate_btn)
+
         self._next_btn = QPushButton("Далее ▶")
         self._next_btn.setDefault(True)
         self._next_btn.clicked.connect(self._on_next)
@@ -84,10 +89,15 @@ class ParagraphEditor(QWidget):
     # Public API
     # ------------------------------------------------------------------
 
-    def set_content(self, original: str, translation: str) -> None:
+    def set_content(self, original: str, translation: str, review_idx: int | None = None) -> None:
         self._orig_text.setPlainText(original)
         self._trans_text.setPlainText(translation)
         self._trans_text.setFocus()
+        self._current_review_idx = review_idx
+
+    @property
+    def current_review_idx(self) -> int | None:
+        return self._current_review_idx
 
     def get_edited_text(self) -> str:
         return self._trans_text.toPlainText()
@@ -113,3 +123,6 @@ class ParagraphEditor(QWidget):
 
     def _on_rephrase(self) -> None:
         self.rephrase_requested.emit()
+
+    def _on_translate(self) -> None:
+        self.translate_requested.emit(self._current_review_idx)

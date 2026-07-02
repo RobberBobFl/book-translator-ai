@@ -105,6 +105,7 @@ class TranslationJob(BaseModel):
     max_tokens: int = 4096
     style: Literal["дословный", "литературный", "адаптированный"] = "литературный"
     mode: Literal["auto", "interactive", "hybrid"] = "auto"
+    target_language: str = "русский"
 
 
 class TranslationResult(BaseModel):
