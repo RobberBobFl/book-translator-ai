@@ -11,7 +11,7 @@ from core.models import (
     Chapter,
     EditRecord,
     GlossaryEntry,
-    Paragraph,
+    Page,
     Translation,
 )
 from state.schema import migrate
@@ -59,15 +59,17 @@ class Database:
     def save_book(self, book: Book, raw_translation_name: str = "raw") -> Book:
         conn = self.conn
         if book.id is None:
+            total_pars = sum(len(ch.paragraphs) for ch in book.chapters)
             cursor = conn.execute(
-                """INSERT INTO books (title, source_path, source_format, file_hash, total_paragraphs)
-                   VALUES (?, ?, ?, ?, ?)""",
+                """INSERT INTO books (title, source_path, source_format, file_hash, total_paragraphs, total_pages)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
                 (
                     book.title,
                     book.source_path,
                     book.source_format,
                     book.file_hash,
-                    sum(len(ch.paragraphs) for ch in book.chapters),
+                    total_pars,
+                    len(book.pages),
                 ),
             )
             assert cursor.lastrowid is not None
@@ -78,22 +80,21 @@ class Database:
             if t.book_id == book.id or t.book_id == 0:
                 t.book_id = book.id
                 self.save_translation(t)
-        # Auto-create a raw translation if none exists and paragraphs exist
-        has_translation = any(
-            p.translation_id != 0
-            for ch in book.chapters for p in ch.paragraphs
-        )
-        if not has_translation and book.chapters:
-            raw_t = self.create_translation(
-                book_id=book.id,
-                name=raw_translation_name,
-                source_type="parallel",
+        # Auto-create a raw translation from pages
+        if book.pages:
+            has_translation = any(
+                p.translation_id != 0 for p in book.pages
             )
-            for chapter in book.chapters:
-                for p in chapter.paragraphs:
+            if not has_translation:
+                raw_t = self.create_translation(
+                    book_id=book.id,
+                    name=raw_translation_name,
+                    source_type="parallel",
+                )
+                for p in book.pages:
                     p.translation_id = raw_t.id
                     p.book_id = book.id
-                    self.save_paragraph(p)
+                    self.save_page(p)
         conn.commit()
         return book
 
@@ -103,20 +104,29 @@ class Database:
         if row is None:
             return None
         translations = self.list_translations(book_id)
-        paragraphs = conn.execute(
-            "SELECT * FROM paragraphs WHERE book_id=? ORDER BY chapter_title, paragraph_index",
+        page_rows = conn.execute(
+            "SELECT * FROM pages WHERE book_id=? ORDER BY chapter_title, page_number",
             (book_id,),
         ).fetchall()
-        chapters: dict[str, list[Paragraph]] = {}
-        for p in paragraphs:
-            chapters.setdefault(p["chapter_title"], []).append(self._row_to_paragraph(p))
+        book_pages = [self._row_to_page(p) for p in page_rows]
+        # Build chapters from pages (group by chapter_title)
+        chapters: dict[str, list[str]] = {}
+        for p in book_pages:
+            chapters.setdefault(p.chapter_title, []).append(p.original_text)
         return Book(
             id=row["id"],
             title=row["title"],
             source_path=row["source_path"],
             source_format=row["source_format"],
             file_hash=row["file_hash"],
-            chapters=[Chapter(title=t, paragraphs=pp) for t, pp in chapters.items()],
+            chapters=[
+                Chapter(
+                    title=t,
+                    paragraphs=[],
+                )
+                for t in chapters
+            ],
+            pages=book_pages,
             translations=translations,
         )
 
@@ -207,42 +217,44 @@ class Database:
         return [self._row_to_translation(r) for r in rows]
 
     # ------------------------------------------------------------------
-    # Paragraphs
+    # Pages
     # ------------------------------------------------------------------
 
-    def save_paragraph(self, p: Paragraph) -> Paragraph:
+    def save_page(self, p: Page) -> Page:
         conn = self.conn
-        edit_history_json = json.dumps(
-            [e.model_dump() for e in p.edit_history], ensure_ascii=False
-        ) if p.edit_history else None
+        edit_history_json = (
+            json.dumps([e.model_dump() for e in p.edit_history], ensure_ascii=False)
+            if p.edit_history
+            else None
+        )
         if p.id == 0:
             cursor = conn.execute(
-                """INSERT OR IGNORE INTO paragraphs
-                   (translation_id, book_id, chapter_title, paragraph_index,
+                """INSERT OR IGNORE INTO pages
+                   (translation_id, book_id, chapter_title, page_number,
                     original_text, model_id, translated_text, status,
                     tokens_in, tokens_out, cost_usd, retry_count,
                     error_message, is_manually_edited, edit_history)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
-                    p.translation_id, p.book_id, p.chapter_title, p.paragraph_index,
+                    p.translation_id, p.book_id, p.chapter_title, p.page_number,
                     p.original_text, p.model_id, p.translated_text, p.status,
                     p.tokens_in, p.tokens_out, str(p.cost_usd), p.retry_count,
                     p.error_message, int(p.is_manually_edited), edit_history_json,
                 ),
             )
-            if cursor.lastrowid is not None:
+            if cursor.lastrowid is not None and cursor.lastrowid != 0:
                 p.id = cursor.lastrowid
             else:
                 row = conn.execute(
-                    """SELECT id FROM paragraphs
-                       WHERE translation_id=? AND chapter_title=? AND paragraph_index=?""",
-                    (p.translation_id, p.chapter_title, p.paragraph_index),
+                    """SELECT id FROM pages
+                       WHERE translation_id=? AND chapter_title=? AND page_number=?""",
+                    (p.translation_id, p.chapter_title, p.page_number),
                 ).fetchone()
                 if row is not None:
                     p.id = row["id"]
         else:
             conn.execute(
-                """UPDATE paragraphs SET translated_text=?, status=?, tokens_in=?,
+                """UPDATE pages SET translated_text=?, status=?, tokens_in=?,
                    tokens_out=?, cost_usd=?, retry_count=?, error_message=?,
                    is_manually_edited=?, edit_history=?, updated_at=datetime('now')
                    WHERE id=?""",
@@ -255,33 +267,33 @@ class Database:
         conn.commit()
         return p
 
-    def get_paragraph(self, paragraph_id: int) -> Paragraph | None:
+    def get_page(self, page_id: int) -> Page | None:
         row = self.conn.execute(
-            "SELECT * FROM paragraphs WHERE id=?", (paragraph_id,)
+            "SELECT * FROM pages WHERE id=?", (page_id,)
         ).fetchone()
         if row is None:
             return None
-        return self._row_to_paragraph(row)
+        return self._row_to_page(row)
 
-    def get_paragraphs(self, translation_id: int) -> list[Paragraph]:
+    def get_pages(self, translation_id: int) -> list[Page]:
         rows = self.conn.execute(
-            "SELECT * FROM paragraphs WHERE translation_id=? ORDER BY chapter_title, paragraph_index",
+            "SELECT * FROM pages WHERE translation_id=? ORDER BY chapter_title, page_number",
             (translation_id,),
         ).fetchall()
-        return [self._row_to_paragraph(r) for r in rows]
+        return [self._row_to_page(r) for r in rows]
 
-    def get_pending_paragraphs(self, translation_id: int) -> list[Paragraph]:
+    def get_pending_pages(self, translation_id: int) -> list[Page]:
         rows = self.conn.execute(
-            """SELECT * FROM paragraphs
+            """SELECT * FROM pages
                WHERE translation_id=? AND status IN ('pending', 'failed')
-               ORDER BY chapter_title, paragraph_index""",
+               ORDER BY chapter_title, page_number""",
             (translation_id,),
         ).fetchall()
-        return [self._row_to_paragraph(r) for r in rows]
+        return [self._row_to_page(r) for r in rows]
 
-    def count_completed(self, translation_id: int) -> int:
+    def count_completed_pages(self, translation_id: int) -> int:
         row = self.conn.execute(
-            "SELECT COUNT(*) as cnt FROM paragraphs WHERE translation_id=? AND status='completed'",
+            "SELECT COUNT(*) as cnt FROM pages WHERE translation_id=? AND status='completed'",
             (translation_id,),
         ).fetchone()
         return row["cnt"] if row else 0
@@ -330,19 +342,21 @@ class Database:
         translation_a_id: int | None = None,
         translation_b_id: int | None = None,
         current_index: int = 0,
+        current_page_index: int | None = None,
         system_prompt: str | None = None,
         is_paused: bool = False,
     ) -> None:
         conn = self.conn
         # Clear any existing session
         conn.execute("DELETE FROM session_state")
+        idx = current_page_index if current_page_index is not None else current_index
         conn.execute(
             """INSERT INTO session_state
                (book_id, mode, translation_a_id, translation_b_id,
-                current_paragraph_index, system_prompt, is_paused)
+                current_page_index, system_prompt, is_paused)
                VALUES (?, ?, ?, ?, ?, ?, ?)""",
             (book_id, mode, translation_a_id, translation_b_id,
-             current_index, system_prompt, int(is_paused)),
+             idx, system_prompt, int(is_paused)),
         )
         conn.commit()
 
@@ -361,7 +375,7 @@ class Database:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _row_to_paragraph(row: sqlite3.Row) -> Paragraph:
+    def _row_to_page(row: sqlite3.Row) -> Page:
         edit_history: list[EditRecord] = []
         if row["edit_history"]:
             try:
@@ -370,12 +384,12 @@ class Database:
                 ]
             except (json.JSONDecodeError, TypeError):
                 edit_history = []
-        return Paragraph(
+        return Page(
             id=row["id"],
             translation_id=row["translation_id"],
             book_id=row["book_id"],
             chapter_title=row["chapter_title"],
-            paragraph_index=row["paragraph_index"],
+            page_number=row["page_number"],
             original_text=row["original_text"],
             model_id=row["model_id"],
             translated_text=row["translated_text"],

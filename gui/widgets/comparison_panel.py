@@ -161,14 +161,14 @@ class ComparisonPanel(QWidget):
         if tid_a == tid_b:
             return
 
-        paras_a = self._db.get_paragraphs(tid_a)
-        paras_b = self._db.get_paragraphs(tid_b)
+        pages_a = self._db.get_pages(tid_a)
+        pages_b = self._db.get_pages(tid_b)
 
         text_a = "\n\n".join(
-            p.translated_text or "" for p in paras_a
+            p.translated_text or "" for p in pages_a
         )
         text_b = "\n\n".join(
-            p.translated_text or "" for p in paras_b
+            p.translated_text or "" for p in pages_b
         )
 
         self._title_a.setText(f"Model A — {label_a}")

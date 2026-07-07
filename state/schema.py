@@ -2,7 +2,7 @@
 
 import sqlite3
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 3
 
 CREATE_BOOKS = """
 CREATE TABLE IF NOT EXISTS books (
@@ -12,6 +12,7 @@ CREATE TABLE IF NOT EXISTS books (
     source_format   TEXT NOT NULL,
     file_hash       TEXT NOT NULL,
     total_paragraphs INTEGER NOT NULL DEFAULT 0,
+    total_pages     INTEGER NOT NULL DEFAULT 0,
     created_at      TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -33,15 +34,15 @@ CREATE TABLE IF NOT EXISTS translations (
 );
 """
 
-CREATE_PARAGRAPHS = """
-CREATE TABLE IF NOT EXISTS paragraphs (
+CREATE_PAGES = """
+CREATE TABLE IF NOT EXISTS pages (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     translation_id  INTEGER NOT NULL REFERENCES translations(id) ON DELETE CASCADE,
     book_id         INTEGER NOT NULL REFERENCES books(id) ON DELETE CASCADE,
     chapter_title   TEXT NOT NULL,
-    paragraph_index INTEGER NOT NULL,
+    page_number     INTEGER NOT NULL,
     original_text   TEXT NOT NULL,
-    model_id        TEXT NOT NULL,
+    model_id        TEXT NOT NULL DEFAULT '',
     translated_text TEXT,
     status          TEXT NOT NULL DEFAULT 'pending'
                     CHECK(status IN ('pending','translating','completed','failed')),
@@ -54,7 +55,7 @@ CREATE TABLE IF NOT EXISTS paragraphs (
     edit_history    TEXT,
     created_at      TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
-    UNIQUE(translation_id, chapter_title, paragraph_index)
+    UNIQUE(translation_id, chapter_title, page_number)
 );
 """
 
@@ -78,7 +79,7 @@ CREATE TABLE IF NOT EXISTS session_state (
     mode            TEXT NOT NULL DEFAULT 'auto',
     translation_a_id INTEGER REFERENCES translations(id),
     translation_b_id INTEGER REFERENCES translations(id),
-    current_paragraph_index INTEGER DEFAULT 0,
+    current_page_index INTEGER DEFAULT 0,
     system_prompt   TEXT,
     is_paused       INTEGER NOT NULL DEFAULT 0
 );
@@ -94,7 +95,7 @@ CREATE TABLE IF NOT EXISTS _meta (
 ALL_DDL = [
     CREATE_BOOKS,
     CREATE_TRANSLATIONS,
-    CREATE_PARAGRAPHS,
+    CREATE_PAGES,
     CREATE_GLOSSARY,
     CREATE_SESSION_STATE,
     CREATE_META,
@@ -125,5 +126,37 @@ def get_schema_version(conn: sqlite3.Connection) -> int:
 def migrate(conn: sqlite3.Connection) -> None:
     """Run migrations to bring database to current schema version."""
     current = get_schema_version(conn)
-    if current < SCHEMA_VERSION:
+
+    if current < 1:
         create_tables(conn)
+        return
+
+    if current < 2:
+        conn.execute(CREATE_PAGES)
+        try:
+            conn.execute(
+                "ALTER TABLE books ADD COLUMN total_pages INTEGER NOT NULL DEFAULT 0"
+            )
+        except sqlite3.OperationalError:
+            pass  # column already exists
+        conn.execute(
+            "INSERT OR REPLACE INTO _meta (key, value) VALUES (?, ?)",
+            ("schema_version", "2"),
+        )
+        conn.commit()
+
+    if current < 3:
+        conn.execute("DROP TABLE IF EXISTS paragraphs")
+        conn.execute("DROP TABLE IF EXISTS paragraphs_backup")
+        # rename legacy column in session_state
+        try:
+            conn.execute(
+                "ALTER TABLE session_state RENAME COLUMN current_paragraph_index TO current_page_index"
+            )
+        except sqlite3.OperationalError:
+            pass
+        conn.execute(
+            "INSERT OR REPLACE INTO _meta (key, value) VALUES (?, ?)",
+            ("schema_version", "3"),
+        )
+        conn.commit()

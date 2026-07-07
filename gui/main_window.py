@@ -188,8 +188,8 @@ class MainWindow(QMainWindow):
 
         source_path = book.source_path
         mode = session.get("mode", "auto")
-        idx = session.get("current_paragraph_index", 0)
-        total = sum(len(ch.paragraphs) for ch in book.chapters)
+        idx = session.get("current_page_index", 0)
+        total = len(book.pages) if book.pages else 0
 
         # --- File existence check ---
         if not Path(source_path).exists():

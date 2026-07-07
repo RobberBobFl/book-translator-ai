@@ -16,6 +16,8 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from loguru import logger
+
 from core.models import Book
 from state.database import Database
 from utils.hash_utils import compute_file_hash
@@ -108,17 +110,32 @@ class BookLoaderWidget(QWidget):
 
         self._title_label = QLabel("")
         self._chapters_label = QLabel("")
+        self._pages_label = QLabel("")
         self._paragraphs_label = QLabel("")
         self._format_label = QLabel("")
 
         for label, widget in [
             ("Название:", self._title_label),
             ("Глав:", self._chapters_label),
-            ("Абзацев:", self._paragraphs_label),
+            ("Страниц:", self._pages_label),
+            ("Всего символов:", self._paragraphs_label),
             ("Формат:", self._format_label),
         ]:
             self._info_form.addRow(label, widget)
             widget.setVisible(False)
+
+        self._legacy_warning = QLabel(
+            "⚠️  Книга загружена в старой версии — страницы отсутствуют.\n"
+            "Перезагрузите файл для работы с новой версией."
+        )
+        self._legacy_warning.setStyleSheet(
+            "color: #e67e22; font-weight: bold; padding: 8px;"
+            " background-color: #fef9e7; border: 1px solid #f5cba7;"
+            " border-radius: 6px;"
+        )
+        self._legacy_warning.setWordWrap(True)
+        self._legacy_warning.setVisible(False)
+        layout.addWidget(self._legacy_warning)
 
         self._drop_label.setVisible(True)
         layout.addLayout(self._info_form)
@@ -220,6 +237,21 @@ class BookLoaderWidget(QWidget):
             )
             return
 
+        logger.info(f"Загружена книга: {book.title}")
+        logger.info(f"Глав: {len(book.chapters)}")
+        logger.info(f"Страниц: {len(book.pages)}")
+        if book.pages:
+            logger.info(f"Всего символов: {sum(len(p.original_text) for p in book.pages)}")
+
+        if not book.pages:
+            QMessageBox.warning(
+                self,
+                "Пустая книга",
+                "Файл не содержит текста для перевода.\n"
+                "Проверьте содержимое файла.",
+            )
+            return
+
         # Save to DB
         try:
             book = self._db.save_book(book)
@@ -231,6 +263,14 @@ class BookLoaderWidget(QWidget):
             )
             return
 
+        saved_count = sum(1 for p in book.pages if p.id != 0) if book.id else 0
+        logger.info(f"Сохранено в БД: {saved_count} страниц")
+        if saved_count != len(book.pages):
+            logger.error(
+                f"ПОТЕРЯ ДАННЫХ! В книге {len(book.pages)} страниц, "
+                f"в БД {saved_count}"
+            )
+
         self._show_book_info(book)
         self.book_loaded.emit(book.id)
 
@@ -240,16 +280,19 @@ class BookLoaderWidget(QWidget):
 
     def _show_book_info(self, book: Book) -> None:
         self._current_book = book
-        total_pars = sum(len(ch.paragraphs) for ch in book.chapters)
 
         self._title_label.setText(book.title)
         self._chapters_label.setText(str(len(book.chapters)))
-        self._paragraphs_label.setText(str(total_pars))
+        self._pages_label.setText(str(len(book.pages)) if book.pages else "—")
+        self._paragraphs_label.setText(
+            str(sum(len(p.original_text) for p in book.pages)) if book.pages else "—"
+        )
         self._format_label.setText(book.source_format.upper())
 
         for widget in [
             self._title_label,
             self._chapters_label,
+            self._pages_label,
             self._paragraphs_label,
             self._format_label,
         ]:
@@ -257,9 +300,12 @@ class BookLoaderWidget(QWidget):
 
         self._drop_label.setText(
             f"✅  Загружено: {book.title}\n"
-            f"{len(book.chapters)} глав, {total_pars} абзацев"
+            f"{len(book.chapters)} глав, {len(book.pages) if book.pages else 0} страниц"
         )
         self._drop_label.setStyleSheet(self._drop_stylesheet(False, loaded=True))
+
+        # Legacy warning: old books loaded without pages
+        self._legacy_warning.setVisible(not book.pages)
 
     @staticmethod
     def _drop_stylesheet(hover: bool = False, loaded: bool = False) -> str:

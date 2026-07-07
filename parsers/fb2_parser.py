@@ -3,6 +3,7 @@
 from pathlib import Path
 
 from lxml import etree
+from loguru import logger
 
 from parsers.base import BookParser
 from core.models import Book
@@ -24,6 +25,8 @@ class Fb2Parser(BookParser):
         root = tree.getroot()
 
         title = self._extract_title(root) or path.stem
+        logger.info(f"Reading FB2: {path.name}")
+
         body = root.find(".//fb:body", NS)
         chapters: list[tuple[str, list[str]]] = []
 
@@ -44,13 +47,17 @@ class Fb2Parser(BookParser):
         if not chapters:
             chapters = [(title, [])]
 
+        pages = self.split_into_pages(chapters)
         book = self.build_book(
             title=title,
             source_path=str(path),
             source_format="fb2",
             chapters=chapters,
+            pages=pages,
         )
         book.file_hash = compute_file_hash(file_path)
+
+        self.check_integrity(file_path, book)
         return book
 
     # ------------------------------------------------------------------

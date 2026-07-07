@@ -1,10 +1,15 @@
-"""Import parser — reuses existing parsers to load a pre-existing translation."""
+"""Import parser — reuses existing parsers to load a pre-existing translation.
+
+Legacy: импорт готовых переводов поабзацно. Не использовать для нового кода.
+Новые книги загружаются через парсеры напрямую, без этой обёртки.
+"""
 
 from pathlib import Path
 
 from parsers.base import BookParser
 from parsers.epub_parser import EpubParser
 from parsers.fb2_parser import Fb2Parser
+from parsers.markdown_import_parser import MarkdownImportParser
 from parsers.pdf_parser import PdfParser
 from parsers.txt_parser import TxtParser
 from core.models import Book
@@ -13,6 +18,8 @@ from core.models import Book
 _PARSER_MAP: dict[str, type[BookParser]] = {
     "epub": EpubParser,
     "fb2": Fb2Parser,
+    "md": MarkdownImportParser,
+    "markdown": MarkdownImportParser,
     "pdf": PdfParser,
     "txt": TxtParser,
 }

@@ -34,6 +34,27 @@ class Paragraph(BaseModel):
     edit_history: list[EditRecord] = Field(default_factory=list)
 
 
+class Page(BaseModel):
+    """A single page (group of paragraphs) to be translated as one unit."""
+
+    id: int = 0
+    translation_id: int
+    book_id: int
+    chapter_title: str
+    page_number: int
+    original_text: str
+    model_id: str = ""
+    translated_text: str | None = None
+    status: Literal["pending", "translating", "completed", "failed"] = "pending"
+    tokens_in: int = 0
+    tokens_out: int = 0
+    cost_usd: Decimal = Decimal("0")
+    retry_count: int = 0
+    error_message: str | None = None
+    is_manually_edited: bool = False
+    edit_history: list[EditRecord] = Field(default_factory=list)
+
+
 class Chapter(BaseModel):
     """Chapter of a book containing a list of paragraphs."""
 
@@ -50,6 +71,7 @@ class Book(BaseModel):
     source_format: str
     file_hash: str
     chapters: list[Chapter]
+    pages: list[Page] = Field(default_factory=list)
     translations: list["Translation"] = Field(default_factory=list)
 
 

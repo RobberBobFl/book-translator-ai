@@ -3,6 +3,7 @@
 from pathlib import Path
 
 import fitz
+from loguru import logger
 
 from parsers.base import BookParser
 from core.models import Book
@@ -18,6 +19,7 @@ class PdfParser(BookParser):
         path = Path(file_path)
         doc = fitz.open(str(path))
         title = path.stem
+        logger.info(f"Reading PDF: {path.name} ({doc.page_count} pages)")
 
         # Extract text from all pages
         all_paragraphs: list[tuple[float, str]] = []  # (y_position, text_block)
@@ -36,13 +38,17 @@ class PdfParser(BookParser):
         # Try to detect chapters
         raw_pars = self.split_paragraphs("\n\n".join(sorted_texts))
         chapters = self.group_into_chapters(raw_pars, title=title)
+        pages = self.split_into_pages(chapters)
 
         book = self.build_book(
             title=title,
             source_path=str(path),
             source_format="pdf",
             chapters=chapters,
+            pages=pages,
         )
         book.file_hash = compute_file_hash(file_path)
         doc.close()
+
+        self.check_integrity(file_path, book)
         return book

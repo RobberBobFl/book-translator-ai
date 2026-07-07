@@ -4,6 +4,7 @@ from pathlib import Path
 
 import ebooklib
 from ebooklib import epub
+from loguru import logger
 
 from parsers.base import BookParser
 from core.models import Book
@@ -19,10 +20,15 @@ class EpubParser(BookParser):
         path = Path(file_path)
         book_epub = epub.read_epub(str(path))
         title = self._extract_title(book_epub) or path.stem
+
+        logger.info(f"Reading EPUB: {path.name}")
+
         chapters_text = self._extract_chapters(book_epub)
         chapters = []
+        raw_len = 0
         for ch_title, html_content in chapters_text:
             text = self._html_to_text(html_content)
+            raw_len += len(text)
             paragraphs = self.split_paragraphs(text)
             if paragraphs:
                 chapters.append((ch_title, paragraphs))
@@ -30,13 +36,17 @@ class EpubParser(BookParser):
         if not chapters:
             chapters = [(title, [])]
 
+        pages = self.split_into_pages(chapters)
         book = self.build_book(
             title=title,
             source_path=str(path),
             source_format="epub",
             chapters=chapters,
+            pages=pages,
         )
         book.file_hash = compute_file_hash(file_path)
+
+        self.check_integrity(file_path, book)
         return book
 
     # ------------------------------------------------------------------

@@ -1,4 +1,4 @@
-"""Paragraph editor widget for interactive / hybrid mode review."""
+"""Page editor widget for interactive / hybrid mode review."""
 
 from PyQt6.QtCore import pyqtSignal
 from PyQt6.QtWidgets import (
@@ -11,7 +11,7 @@ from PyQt6.QtWidgets import (
 )
 
 
-class ParagraphEditor(QWidget):
+class PageEditor(QWidget):
     """Shows original + editable translation; emit signals for user actions."""
 
     accepted = pyqtSignal(str)   # edited text
@@ -19,7 +19,7 @@ class ParagraphEditor(QWidget):
     back_requested = pyqtSignal()
     skip_requested = pyqtSignal()
     rephrase_requested = pyqtSignal()
-    translate_requested = pyqtSignal(int)  # (paragraph_id)
+    translate_requested = pyqtSignal(int)  # (page index)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)

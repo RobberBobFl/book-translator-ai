@@ -26,9 +26,9 @@ from exporters.markdown_exporter import check_translation_complete, export_to_ma
 
 from core.config import ConfigManager
 from core.glossary import GlossaryManager
-from core.models import Paragraph, TranslationJob
+from core.models import Page, TranslationJob
 from gui.worker import WorkerManager
-from gui.widgets.paragraph_editor import ParagraphEditor
+from gui.widgets.page_editor import PageEditor
 from state.database import Database
 from translator.engine import TranslatorEngine
 
@@ -73,14 +73,14 @@ class TranslationPanel(QWidget):
         self._worker_mgr.set_glossary_manager(self._glossary_mgr)
         self._worker_mgr.all_finished.connect(self._on_all_finished)
         self._worker_mgr.needs_review.connect(self._on_needs_review)
-        self._worker_mgr.paragraph_failed.connect(self._on_paragraph_failed)
+        self._worker_mgr.page_failed.connect(self._on_page_failed)
         self._worker_mgr.error_occurred.connect(self._on_error_occurred)
         self._worker_mgr.interim_cost_a.connect(self._update_cost_a)
         self._worker_mgr.interim_cost_b.connect(self._update_cost_b)
 
         self._book_id: int | None = None
         self._translation_a_id: int | None = None
-        self._paragraphs_a: list[Paragraph] = []
+        self._pages_a: list[Page] = []
         self._side_items: dict[int, QListWidgetItem] = {}
         self._current_review_idx: int | None = None
 
@@ -151,10 +151,10 @@ class TranslationPanel(QWidget):
         # -- Progress section --------------------------------------------
         self._progress_a_bar = QProgressBar()
         self._progress_a_bar.setTextVisible(True)
-        self._progress_a_bar.setFormat("Model A: %v / %m")
+        self._progress_a_bar.setFormat("Стр. A: %v / %m")
         self._progress_b_bar = QProgressBar()
         self._progress_b_bar.setTextVisible(True)
-        self._progress_b_bar.setFormat("Model B: %v / %m")
+        self._progress_b_bar.setFormat("Стр. B: %v / %m")
         self._progress_b_bar.hide()
 
         top_layout.addWidget(self._progress_a_bar)
@@ -188,8 +188,8 @@ class TranslationPanel(QWidget):
         bottom_left = QWidget()
         bottom_left_layout = QVBoxLayout(bottom_left)
 
-        # -- Problem paragraphs ------------------------------------------
-        prob_label = QLabel("Проблемные абзацы:")
+        # -- Problem pages ------------------------------------------
+        prob_label = QLabel("Проблемные страницы:")
         prob_label.setStyleSheet("font-weight: bold;")
         bottom_left_layout.addWidget(prob_label)
 
@@ -197,7 +197,7 @@ class TranslationPanel(QWidget):
         bottom_left_layout.addWidget(self._problem_list, 1)
 
         # -- Review editor -----------------------------------------------
-        self._editor = ParagraphEditor()
+        self._editor = PageEditor()
         self._editor.hide()
         bottom_left_layout.addWidget(self._editor)
 
@@ -206,7 +206,7 @@ class TranslationPanel(QWidget):
         # -- Hybrid side panel -------------------------------------------
         side_widget = QWidget()
         side_layout = QVBoxLayout(side_widget)
-        side_label = QLabel("Абзацы:")
+        side_label = QLabel("Страницы:")
         side_label.setStyleSheet("font-weight: bold;")
         side_layout.addWidget(side_label)
 
@@ -332,6 +332,17 @@ class TranslationPanel(QWidget):
             self.log("Ошибка: Model A не выбрана")
             return
 
+        # --- empty book guard ---
+        if not book.pages:
+            self.log("Ошибка: книга не содержит страниц для перевода")
+            QMessageBox.warning(
+                self,
+                "Нет страниц",
+                "В книге нет страниц для перевода.\n"
+                "Возможно, файл пуст или повреждён.",
+            )
+            return
+
         trans_a = self._db.create_translation(
             book_id=self._book_id,
             name=f"{mode} — {job_a.model_id} — {ts}",
@@ -340,14 +351,14 @@ class TranslationPanel(QWidget):
             mode=mode,
         )
         self._translation_a_id = trans_a.id
-        self._paragraphs_a = self._create_paragraphs_for_translation(
+        self._pages_a = self._create_pages_for_translation(
             book, trans_a.id
         )
 
         # --- worker B setup (comparison) ---
         compare = cfg.get("comparison_enabled", False)
         translation_b_id = None
-        paragraphs_b = None
+        pages_b = None
         job_b = None
 
         if compare:
@@ -362,10 +373,10 @@ class TranslationPanel(QWidget):
                     mode=mode,
                 )
                 translation_b_id = trans_b.id
-                paragraphs_b = self._create_paragraphs_for_translation(
+                pages_b = self._create_pages_for_translation(
                     book, trans_b.id
                 )
-                self._progress_b_bar.setMaximum(len(paragraphs_b))
+                self._progress_b_bar.setMaximum(len(pages_b))
                 self._progress_b_bar.setValue(0)
                 self._progress_b_bar.show()
                 self._cost_b_label.show()
@@ -386,18 +397,18 @@ class TranslationPanel(QWidget):
         except TypeError:
             pass
         try:
-            self._worker_mgr.paragraph_done.disconnect()
+            self._worker_mgr.page_done.disconnect()
         except TypeError:
             pass
 
         self._worker_mgr.progress_changed.connect(self._on_progress_a)
         self._worker_mgr.worker_finished.connect(self._on_worker_finished)
-        self._worker_mgr.paragraph_done.connect(self._on_paragraph_done)
+        self._worker_mgr.page_done.connect(self._on_page_done)
         if compare:
             self._worker_mgr.progress_b_changed.connect(self._on_progress_b)
 
         # Setup progress
-        self._progress_a_bar.setMaximum(len(self._paragraphs_a))
+        self._progress_a_bar.setMaximum(len(self._pages_a))
         self._progress_a_bar.setValue(0)
 
         # Clear state
@@ -408,7 +419,7 @@ class TranslationPanel(QWidget):
         self._editor.hide()
 
         # Populate side panel with pending items
-        for idx, p in enumerate(self._paragraphs_a):
+        for idx, p in enumerate(self._pages_a):
             item = self._make_side_item(idx, p)
             self._side_list.addItem(item)
             self._side_items[idx] = item
@@ -418,16 +429,16 @@ class TranslationPanel(QWidget):
             book_id=self._book_id,
             translation_a_id=trans_a.id,
             job_a=job_a,
-            paragraphs_a=self._paragraphs_a,
+            pages_a=self._pages_a,
             start_index_a=0,
             translation_b_id=translation_b_id,
             job_b=job_b,
-            paragraphs_b=paragraphs_b,
+            pages_b=pages_b,
             start_index_b=0,
         )
 
         self._set_running_state(True)
-        self.log(f"Запущен перевод (режим: {mode})")
+        self.log(f"Запущен перевод: {len(self._pages_a)} страниц, режим: {mode}")
         if compare and job_b:
             self.log(f" Model A: {job_a.model_id} | Model B: {job_b.model_id}")
         else:
@@ -440,7 +451,7 @@ class TranslationPanel(QWidget):
             mode=mode,
             translation_a_id=trans_a.id,
             translation_b_id=translation_b_id,
-            current_index=0,
+            current_page_index=0,
         )
 
     def _build_job(
@@ -459,27 +470,26 @@ class TranslationPanel(QWidget):
             target_language=self._lang_combo.currentText() or "русский",
         )
 
-    def _create_paragraphs_for_translation(
+    def _create_pages_for_translation(
         self, book, translation_id: int
-    ) -> list[Paragraph]:
-        existing = self._db.get_paragraphs(translation_id)
+    ) -> list[Page]:
+        existing = self._db.get_pages(translation_id)
         if existing:
             return existing
-        paragraphs: list[Paragraph] = []
-        for ch in book.chapters:
-            for p in ch.paragraphs:
-                new_p = Paragraph(
-                    translation_id=translation_id,
-                    book_id=self._book_id,
-                    chapter_title=p.chapter_title,
-                    paragraph_index=p.paragraph_index,
-                    original_text=p.original_text,
-                    model_id="",
-                    status="pending",
-                )
-                self._db.save_paragraph(new_p)
-                paragraphs.append(new_p)
-        return paragraphs
+        pages: list[Page] = []
+        for p in book.pages:
+            new_p = Page(
+                translation_id=translation_id,
+                book_id=self._book_id,
+                chapter_title=p.chapter_title,
+                page_number=p.page_number,
+                original_text=p.original_text,
+                model_id="",
+                status="pending",
+            )
+            self._db.save_page(new_p)
+            pages.append(new_p)
+        return pages
 
     def _on_pause(self) -> None:
         self._worker_mgr.pause()
@@ -560,17 +570,15 @@ class TranslationPanel(QWidget):
         self._editor.set_content(original, translation, idx)
         self._editor.show()
 
-    def _on_paragraph_done(self, idx: int, paragraph_id: int) -> None:
-        # Update side panel item color
+    def _on_page_done(self, idx: int, page_id: int) -> None:
         item = self._side_items.get(idx)
         if item is not None:
             item.setBackground(self._COLOR_COMPLETED)
 
-    def _on_paragraph_failed(self, idx: int, error: str) -> None:
-        item = QListWidgetItem(f"#{idx}: {error}")
+    def _on_page_failed(self, idx: int, error: str) -> None:
+        item = QListWidgetItem(f"#стр.{idx}: {error}")
         self._problem_list.addItem(item)
-        self.log(f"Ошибка абзаца #{idx}: {error}")
-        # Update side panel item color
+        self.log(f"Ошибка страницы #{idx}: {error}")
         side = self._side_items.get(idx)
         if side is not None:
             side.setBackground(self._COLOR_FAILED)
@@ -606,8 +614,8 @@ class TranslationPanel(QWidget):
 
     def _on_review_translate(self) -> None:
         idx = self._editor.current_review_idx if hasattr(self._editor, 'current_review_idx') else None
-        if idx is not None and idx >= 0 and idx < len(self._paragraphs_a):
-            self._worker_mgr.translate_paragraph(idx)
+        if idx is not None and idx >= 0 and idx < len(self._pages_a):
+            self._worker_mgr.translate_page(idx)
         self._editor.hide()
         self._current_review_idx = None
 
@@ -619,25 +627,22 @@ class TranslationPanel(QWidget):
         idx = item.data(Qt.ItemDataRole.UserRole)
         if idx is None:
             return
-        if idx < 0 or idx >= len(self._paragraphs_a):
+        if idx < 0 or idx >= len(self._pages_a):
             return
-        para = self._paragraphs_a[idx]
-        if para.translated_text:
-            self._editor.set_content(para.original_text, para.translated_text, idx)
-        else:
-            self._editor.set_content(para.original_text, "", idx)
+        page = self._pages_a[idx]
+        self._editor.set_content(page.original_text, page.translated_text or "", idx)
         self._current_review_idx = idx
         self._editor.show()
 
-    def _make_side_item(self, idx: int, para: Paragraph) -> QListWidgetItem:
-        chapter = para.chapter_title or "?"
-        text = para.original_text[:60].replace("\n", " ")
-        label = f"§{idx} [{chapter}] {text}"
+    def _make_side_item(self, idx: int, page: Page) -> QListWidgetItem:
+        chapter = page.chapter_title or "?"
+        text = page.original_text[:60].replace("\n", " ")
+        label = f"§{idx} [{chapter}/стр.{page.page_number}] {text}"
         item = QListWidgetItem(label)
         item.setData(Qt.ItemDataRole.UserRole, idx)
-        if para.status == "completed" and para.translated_text:
+        if page.status == "completed" and page.translated_text:
             item.setBackground(self._COLOR_COMPLETED)
-        elif para.status == "failed":
+        elif page.status == "failed":
             item.setBackground(self._COLOR_FAILED)
         return item
 

@@ -1,6 +1,6 @@
-"""Build context from previously translated paragraphs."""
+"""Build context from previously translated pages."""
 
-from core.models import Paragraph
+from core.models import Page
 
 
 # rough limit to avoid blowing the context window
@@ -8,18 +8,18 @@ _MAX_CONTEXT_SYMBOLS = 4000
 
 
 def build_context(
-    paragraphs: list[Paragraph],
+    pages: list[Page],
     current_index: int,
     n: int = 2,
     max_symbols: int = _MAX_CONTEXT_SYMBOLS,
 ) -> str:
-    """Collect the last *n* translated paragraphs preceding *current_index*
+    """Collect the last *n* translated pages preceding *current_index*
     and format them as a context block for the prompt.
 
-    Only paragraphs with ``status == 'completed'`` and a non-empty
+    Only pages with ``status == 'completed'`` and a non-empty
     ``translated_text`` are included.
     """
-    before = paragraphs[:current_index]
+    before = pages[:current_index]
     done = [p for p in before
             if p.status == "completed" and p.translated_text]
 
@@ -27,7 +27,7 @@ def build_context(
     total = 0
 
     for p in reversed(done):
-        block = _format_paragraph(p)
+        block = _format_page(p)
         total += len(block)
         if total > max_symbols:
             break
@@ -39,13 +39,13 @@ def build_context(
     if not context:
         return ""
 
-    lines = ["<context>", "Below are the previously translated paragraphs:"]
+    lines = ["<context>", "Below are the previously translated pages:"]
     for block in context:
         lines.append(block)
     lines.append("</context>")
     return "\n".join(lines)
 
 
-def _format_paragraph(p: Paragraph) -> str:
-    title = p.chapter_title or "(no chapter)"
-    return f"[{title} §{p.paragraph_index}]\n{p.translated_text}"
+def _format_page(p: Page) -> str:
+    title = p.chapter_title or f"Page {p.page_number}"
+    return f"[{title} стр.{p.page_number}]\n{p.translated_text}"
