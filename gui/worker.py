@@ -4,6 +4,7 @@ import asyncio
 import logging
 from decimal import Decimal
 
+from loguru import logger
 from PyQt6.QtCore import QObject, pyqtSignal
 
 from core.glossary import GlossaryManager
@@ -77,6 +78,7 @@ class TranslationWorker(QObject):
         self._total_cost = Decimal("0")
 
         self._source_language: str | None = None  # lazy cache
+        logger.debug(f"TranslationWorker init: model={job.model_id}, target_language={job.target_language}, mode={job.mode}")
 
     # ------------------------------------------------------------------
     # Public control
@@ -130,6 +132,9 @@ class TranslationWorker(QObject):
             style=self._job.style,
             source_language=self._source_language,
             target_language=self._job.target_language,
+        )
+        logger.debug(
+            f"translate_paragraph[{idx}] system prompt: {messages[0]['content'][:200]}"
         )
 
         result = await self._engine.translate(
@@ -242,6 +247,9 @@ class TranslationWorker(QObject):
                 style=self._job.style,
                 source_language=self._source_language,
                 target_language=self._job.target_language,
+            )
+            logger.debug(
+                f"_translate_one[{idx}] system prompt: {messages[0]['content'][:200]}"
             )
 
             result = await self._engine.translate(

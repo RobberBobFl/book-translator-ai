@@ -3,10 +3,12 @@
 from datetime import datetime
 from decimal import Decimal
 
+from loguru import logger
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QColor, QShortcut, QKeySequence
 from PyQt6.QtWidgets import (
     QComboBox,
+    QFileDialog,
     QHBoxLayout,
     QLabel,
     QListWidget,
@@ -20,6 +22,8 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from exporters.markdown_exporter import check_translation_complete, export_to_markdown
+
 from core.config import ConfigManager
 from core.glossary import GlossaryManager
 from core.models import Paragraph, TranslationJob
@@ -27,6 +31,9 @@ from gui.worker import WorkerManager
 from gui.widgets.paragraph_editor import ParagraphEditor
 from state.database import Database
 from translator.engine import TranslatorEngine
+
+
+_LANGUAGE_OPTIONS = ["русский", "английский"]
 
 
 class TranslationPanel(QWidget):
@@ -72,12 +79,14 @@ class TranslationPanel(QWidget):
         self._worker_mgr.interim_cost_b.connect(self._update_cost_b)
 
         self._book_id: int | None = None
+        self._translation_a_id: int | None = None
         self._paragraphs_a: list[Paragraph] = []
         self._side_items: dict[int, QListWidgetItem] = {}
         self._current_review_idx: int | None = None
 
         self._build_ui()
         self._connect_editor_signals()
+        self._init_lang_combo()
         self._update_model_label()
         self._set_running_state(False)
 
@@ -105,6 +114,10 @@ class TranslationPanel(QWidget):
         self._model_label = QLabel("Модель: —")
         self._model_label.setStyleSheet("font-weight: bold;")
 
+        self._lang_combo = QComboBox()
+        self._lang_combo.addItems(_LANGUAGE_OPTIONS)
+        self._lang_combo.setToolTip("Язык, на который выполняется перевод")
+
         self._start_btn = QPushButton("▶ Начать")
         self._start_btn.clicked.connect(self._on_start)
         self._pause_btn = QPushButton("⏸ Пауза")
@@ -114,16 +127,24 @@ class TranslationPanel(QWidget):
         self._resume_btn.hide()
         self._stop_btn = QPushButton("⏹ Стоп")
         self._stop_btn.clicked.connect(self._on_stop)
+        self._export_btn = QPushButton("💾 Сохранить как MD")
+        self._export_btn.clicked.connect(self._on_export_clicked)
+        self._export_btn.setEnabled(False)
 
         ctrl_row.addWidget(QLabel("Режим:"))
         ctrl_row.addWidget(self._mode_combo)
         ctrl_row.addSpacing(10)
         ctrl_row.addWidget(self._model_label)
         ctrl_row.addSpacing(20)
+        ctrl_row.addWidget(QLabel("Язык:"))
+        ctrl_row.addWidget(self._lang_combo)
+        ctrl_row.addSpacing(20)
         ctrl_row.addWidget(self._start_btn)
         ctrl_row.addWidget(self._pause_btn)
         ctrl_row.addWidget(self._resume_btn)
         ctrl_row.addWidget(self._stop_btn)
+        ctrl_row.addSpacing(20)
+        ctrl_row.addWidget(self._export_btn)
         ctrl_row.addStretch()
         top_layout.addLayout(ctrl_row)
 
@@ -205,13 +226,30 @@ class TranslationPanel(QWidget):
         self._editor.rephrase_requested.connect(self._on_review_rephrase)
         self._editor.translate_requested.connect(self._on_review_translate)
 
+    def _init_lang_combo(self) -> None:
+        cfg = self._cfg.load_app_config()
+        lang = cfg.get("target_language", "русский")
+        self._lang_combo.blockSignals(True)
+        self._lang_combo.setCurrentText(lang)
+        self._lang_combo.blockSignals(False)
+        self._lang_combo.currentTextChanged.connect(self._on_lang_changed)
+        logger.info(f"Target language initialised: {lang}")
+
+    def _on_lang_changed(self, lang: str) -> None:
+        cfg = self._cfg.load_app_config()
+        cfg["target_language"] = lang
+        self._cfg.save_app_config(cfg)
+        logger.info(f"Target language set to: {lang}")
+
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
 
     def set_book(self, book_id: int | None) -> None:
         self._book_id = book_id
+        self._translation_a_id = None
         self._start_btn.setEnabled(book_id is not None)
+        self._export_btn.setEnabled(book_id is not None)
 
     def refresh_models(self) -> None:
         """Called when providers change — updates the read-only model label."""
@@ -226,12 +264,52 @@ class TranslationPanel(QWidget):
         current_index: int,
     ) -> None:
         self._book_id = book_id
+        self._translation_a_id = translation_a_id
         self._mode_combo.setCurrentText(mode)
         self.log(f"Сессия восстановлена (книга #{book_id}, шаг {current_index})")
 
     # ------------------------------------------------------------------
     # Controls
     # ------------------------------------------------------------------
+
+    def _on_export_clicked(self) -> None:
+        if self._book_id is None or self._translation_a_id is None:
+            QMessageBox.warning(self, "Экспорт", "Нет активного перевода для экспорта.")
+            return
+
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Сохранить перевод как Markdown",
+            "translation.md",
+            "Markdown files (*.md);;All files (*)",
+        )
+        if not file_path:
+            return
+
+        if not check_translation_complete(self._db, self._translation_a_id):
+            reply = QMessageBox.question(
+                self,
+                "Перевод не завершён",
+                "Перевод ещё не завершён. Экспортировать как есть?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return
+
+        try:
+            result = export_to_markdown(
+                db=self._db,
+                book_id=self._book_id,
+                translation_id=self._translation_a_id,
+                output_path=file_path,
+                include_original=True,
+            )
+            QMessageBox.information(self, "Экспорт", f"Перевод сохранён:\n{result}")
+            self.log(f"Экспорт завершён: {result}")
+        except Exception as exc:
+            QMessageBox.critical(self, "Ошибка экспорта", f"Не удалось сохранить файл:\n{exc}")
+            self.log(f"Ошибка экспорта: {exc}")
 
     def _on_start(self) -> None:
         if self._book_id is None:
@@ -261,6 +339,7 @@ class TranslationPanel(QWidget):
             source_type="parallel",
             mode=mode,
         )
+        self._translation_a_id = trans_a.id
         self._paragraphs_a = self._create_paragraphs_for_translation(
             book, trans_a.id
         )
@@ -377,7 +456,7 @@ class TranslationPanel(QWidget):
             max_tokens=int(cfg.get("max_tokens", 4096)),
             style=cfg.get("style", "литературный"),
             mode=mode,
-            target_language=cfg.get("target_language", "русский"),
+            target_language=self._lang_combo.currentText() or "русский",
         )
 
     def _create_paragraphs_for_translation(
@@ -582,6 +661,7 @@ class TranslationPanel(QWidget):
         self._pause_btn.setVisible(running)
         self._resume_btn.setVisible(False)
         self._stop_btn.setVisible(running)
+        self._export_btn.setEnabled(not running and self._book_id is not None)
 
     # ------------------------------------------------------------------
     # Log

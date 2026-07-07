@@ -26,7 +26,6 @@ from core.models import Provider, ModelPricing
 
 
 _STYLE_OPTIONS = ["дословный", "литературный", "адаптированный"]
-_LANGUAGE_OPTIONS = ["русский", "английский"]
 
 
 class SettingsPanel(QWidget):
@@ -131,15 +130,10 @@ class SettingsPanel(QWidget):
         self._style_combo.addItems(_STYLE_OPTIONS)
         self._style_combo.currentTextChanged.connect(self._on_setting_changed)
 
-        self._lang_combo = QComboBox()
-        self._lang_combo.addItems(_LANGUAGE_OPTIONS)
-        self._lang_combo.currentTextChanged.connect(self._on_setting_changed)
-
         param_layout.addRow("Temperature:", self._temp_spin)
         param_layout.addRow("Top-p:", self._top_p_spin)
         param_layout.addRow("Max tokens:", self._max_tokens_spin)
         param_layout.addRow("Стиль:", self._style_combo)
-        param_layout.addRow("Язык перевода:", self._lang_combo)
 
         outer.addWidget(param_group)
         outer.addStretch()
@@ -161,7 +155,6 @@ class SettingsPanel(QWidget):
         self._top_p_spin.setValue(float(cfg.get("top_p", 0.9)))
         self._max_tokens_spin.setValue(int(cfg.get("max_tokens", 4096)))
         self._style_combo.setCurrentText(cfg.get("style", "литературный"))
-        self._lang_combo.setCurrentText(cfg.get("target_language", "русский"))
 
         # Model combos
         self._populate_model_combos()
@@ -183,7 +176,6 @@ class SettingsPanel(QWidget):
         cfg["top_p"] = self._top_p_spin.value()
         cfg["max_tokens"] = self._max_tokens_spin.value()
         cfg["style"] = self._style_combo.currentText()
-        cfg["target_language"] = self._lang_combo.currentText()
         cfg["last_model_a"] = self._model_a_combo.currentText().strip()
         cfg["last_model_b"] = self._model_b_combo.currentText().strip()
         cfg["comparison_enabled"] = self._compare_check.isChecked()
