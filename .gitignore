@@ -12,3 +12,5 @@ agent.md
 opencode.json
 plan.md
 *.db
+_test_settings.py
+test_parser.py
