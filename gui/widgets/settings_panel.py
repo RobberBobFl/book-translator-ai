@@ -1,8 +1,7 @@
-"""Settings panel — provider management, model A/B, translation parameters."""
+"""Settings panel — provider management, model selection, translation parameters."""
 
 from PyQt6.QtCore import pyqtSignal
 from PyQt6.QtWidgets import (
-    QCheckBox,
     QComboBox,
     QDialog,
     QDoubleSpinBox,
@@ -10,7 +9,6 @@ from PyQt6.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
     QInputDialog,
-    QLabel,
     QLineEdit,
     QListWidget,
     QListWidgetItem,
@@ -29,15 +27,13 @@ _STYLE_OPTIONS = ["дословный", "литературный", "адапт�
 
 
 class SettingsPanel(QWidget):
-    """Translation settings: providers, model A/B, temperature, style, etc.
+    """Translation settings: providers, model, temperature, style, etc.
 
     Emits:
         settings_changed():  whenever any setting is modified.
-        comparison_toggled(enabled):  when the comparison checkbox changes.
     """
 
     settings_changed = pyqtSignal()
-    comparison_toggled = pyqtSignal(bool)
 
     def __init__(self, config_manager: ConfigManager, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -82,26 +78,15 @@ class SettingsPanel(QWidget):
         outer.addWidget(prov_group)
 
         # -- Model selection --------------------------------------------
-        model_group = QGroupBox("Модели для перевода")
+        model_group = QGroupBox("Модель для перевода")
         model_layout = QFormLayout(model_group)
 
-        self._model_a_combo = QComboBox()
-        self._model_a_combo.setEditable(True)
-        self._model_a_combo.setPlaceholderText("Выберите или введите модель...")
-        self._model_a_combo.currentTextChanged.connect(self._on_setting_changed)
+        self._model_combo = QComboBox()
+        self._model_combo.setEditable(True)
+        self._model_combo.setPlaceholderText("Выберите или введите модель...")
+        self._model_combo.currentTextChanged.connect(self._on_setting_changed)
 
-        self._compare_check = QCheckBox("Сравнить с другой моделью")
-        self._compare_check.toggled.connect(self._on_comparison_toggled)
-
-        self._model_b_combo = QComboBox()
-        self._model_b_combo.setEditable(True)
-        self._model_b_combo.setPlaceholderText("Выберите или введите модель...")
-        self._model_b_combo.setVisible(False)
-        self._model_b_combo.currentTextChanged.connect(self._on_setting_changed)
-
-        model_layout.addRow("Model A:", self._model_a_combo)
-        model_layout.addRow("", self._compare_check)
-        model_layout.addRow("Model B:", self._model_b_combo)
+        model_layout.addRow("Model:", self._model_combo)
 
         outer.addWidget(model_group)
 
@@ -156,17 +141,11 @@ class SettingsPanel(QWidget):
         self._max_tokens_spin.setValue(int(cfg.get("max_tokens", 4096)))
         self._style_combo.setCurrentText(cfg.get("style", "литературный"))
 
-        # Model combos
+        # Model combo
         self._populate_model_combos()
-        last_a = cfg.get("last_model_a", "")
-        last_b = cfg.get("last_model_b", "")
-        compare = cfg.get("comparison_enabled", False)
-        if last_a:
-            self._model_a_combo.setCurrentText(last_a)
-        if last_b:
-            self._model_b_combo.setCurrentText(last_b)
-        self._compare_check.setChecked(compare)
-        self._model_b_combo.setVisible(compare)
+        last_model = cfg.get("last_model", "")
+        if last_model:
+            self._model_combo.setCurrentText(last_model)
 
         self._suppress_signals = False
 
@@ -176,16 +155,13 @@ class SettingsPanel(QWidget):
         cfg["top_p"] = self._top_p_spin.value()
         cfg["max_tokens"] = self._max_tokens_spin.value()
         cfg["style"] = self._style_combo.currentText()
-        cfg["last_model_a"] = self._model_a_combo.currentText().strip()
-        cfg["last_model_b"] = self._model_b_combo.currentText().strip()
-        cfg["comparison_enabled"] = self._compare_check.isChecked()
-        # Normalise model names that lack a provider prefix
-        for key in ("last_model_a", "last_model_b"):
-            val = cfg.get(key, "")
-            if val and "/" not in val:
-                provider = self._get_selected_provider()
-                if provider:
-                    cfg[key] = normalize_model_name(provider.base_url, val)
+        cfg["last_model"] = self._model_combo.currentText().strip()
+        # Normalise model name if it lacks a provider prefix
+        val = cfg.get("last_model", "")
+        if val and "/" not in val:
+            provider = self._get_selected_provider()
+            if provider:
+                cfg["last_model"] = normalize_model_name(provider.base_url, val)
         if self._provider_list.currentRow() >= 0:
             selected = self._providers[self._provider_list.currentRow()]
             cfg["last_provider_id"] = selected.id
@@ -217,23 +193,13 @@ class SettingsPanel(QWidget):
                 if full not in models:
                     models.append(full)
 
-        self._model_a_combo.blockSignals(True)
-        self._model_b_combo.blockSignals(True)
-        current_a = self._model_a_combo.currentText()
-        current_b = self._model_b_combo.currentText()
-
-        self._model_a_combo.clear()
-        self._model_b_combo.clear()
-        self._model_a_combo.addItems(sorted(models))
-        self._model_b_combo.addItems(sorted(models))
-
-        if current_a:
-            self._model_a_combo.setCurrentText(current_a)
-        if current_b:
-            self._model_b_combo.setCurrentText(current_b)
-
-        self._model_a_combo.blockSignals(False)
-        self._model_b_combo.blockSignals(False)
+        self._model_combo.blockSignals(True)
+        current = self._model_combo.currentText()
+        self._model_combo.clear()
+        self._model_combo.addItems(sorted(models))
+        if current:
+            self._model_combo.setCurrentText(current)
+        self._model_combo.blockSignals(False)
 
     # ------------------------------------------------------------------
     # Provider CRUD dialogs
@@ -285,15 +251,6 @@ class SettingsPanel(QWidget):
         self._del_prov_btn.setEnabled(has_selection)
 
     # ------------------------------------------------------------------
-    # Comparison toggle
-    # ------------------------------------------------------------------
-
-    def _on_comparison_toggled(self, enabled: bool) -> None:
-        self._model_b_combo.setVisible(enabled)
-        self.comparison_toggled.emit(enabled)
-        self._emit_changed()
-
-    # ------------------------------------------------------------------
     # Signals
     # ------------------------------------------------------------------
 
@@ -315,14 +272,8 @@ class SettingsPanel(QWidget):
             return self._providers[row]
         return None
 
-    def get_model_a(self) -> str:
-        return self._model_a_combo.currentText().strip()
-
-    def get_model_b(self) -> str:
-        return self._model_b_combo.currentText().strip()
-
-    def is_comparison_enabled(self) -> bool:
-        return self._compare_check.isChecked()
+    def get_model(self) -> str:
+        return self._model_combo.currentText().strip()
 
     def get_temperature(self) -> float:
         return self._temp_spin.value()

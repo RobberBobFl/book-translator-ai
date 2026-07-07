@@ -23,9 +23,6 @@ from state.database import Database
 from utils.hash_utils import compute_file_hash
 from parsers.base import BookParser
 from parsers.txt_parser import TxtParser
-from parsers.epub_parser import EpubParser
-from parsers.fb2_parser import Fb2Parser
-from parsers.pdf_parser import PdfParser
 
 
 # ---------------------------------------------------------------------------
@@ -34,9 +31,6 @@ from parsers.pdf_parser import PdfParser
 
 _PARSERS: dict[str, type[BookParser]] = {
     "txt": TxtParser,
-    "epub": EpubParser,
-    "fb2": Fb2Parser,
-    "pdf": PdfParser,
 }
 
 SUPPORTED_FORMATS = sorted(_PARSERS.keys())
@@ -176,7 +170,7 @@ class BookLoaderWidget(QWidget):
     # ------------------------------------------------------------------
 
     def _on_open_clicked(self) -> None:
-        filter_str = "Книги (*.epub *.fb2 *.pdf *.txt);;Все файлы (*)"
+        filter_str = "Текст (*.txt);;Все файлы (*)"
         path, _ = QFileDialog.getOpenFileName(
             self, "Выберите файл книги", "", filter_str,
         )

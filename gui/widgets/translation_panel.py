@@ -1,5 +1,6 @@
 """Translation panel — mode selection, progress, log, problem tracking."""
 
+import asyncio
 from datetime import datetime
 from decimal import Decimal
 
@@ -27,7 +28,7 @@ from exporters.markdown_exporter import check_translation_complete, export_to_ma
 from core.config import ConfigManager
 from core.glossary import GlossaryManager
 from core.models import Page, TranslationJob
-from gui.worker import WorkerManager
+from gui.worker import TranslationWorker
 from gui.widgets.page_editor import PageEditor
 from state.database import Database
 from translator.engine import TranslatorEngine
@@ -42,14 +43,14 @@ class TranslationPanel(QWidget):
     Provides:
     - Mode selector (auto / interactive / hybrid)
     - Start / Pause / Resume / Stop controls
-    - Progress bar(s)
+    - Progress bar
     - Activity log
-    - Problem (failed) paragraph list
+    - Problem (failed) page list
     - Interactive review for manual editing
-    - Hybrid side panel with paragraph list and status colors
+    - Hybrid side panel with page list and status colors
     """
 
-    translation_started = pyqtSignal(int, int)   # translation_a_id, translation_b_id (0 if none)
+    translation_started = pyqtSignal(int)   # translation_id
     translation_finished = pyqtSignal()
 
     _COLOR_COMPLETED = QColor(200, 255, 200)
@@ -67,20 +68,15 @@ class TranslationPanel(QWidget):
         super().__init__(parent)
         self._db = db
         self._cfg = config_manager
+        self._engine = engine
         self._glossary_mgr = GlossaryManager(db)
 
-        self._worker_mgr = WorkerManager(db, engine)
-        self._worker_mgr.set_glossary_manager(self._glossary_mgr)
-        self._worker_mgr.all_finished.connect(self._on_all_finished)
-        self._worker_mgr.needs_review.connect(self._on_needs_review)
-        self._worker_mgr.page_failed.connect(self._on_page_failed)
-        self._worker_mgr.error_occurred.connect(self._on_error_occurred)
-        self._worker_mgr.interim_cost_a.connect(self._update_cost_a)
-        self._worker_mgr.interim_cost_b.connect(self._update_cost_b)
+        self._worker: TranslationWorker | None = None
+        self._task: asyncio.Task | None = None
 
         self._book_id: int | None = None
-        self._translation_a_id: int | None = None
-        self._pages_a: list[Page] = []
+        self._translation_id: int | None = None
+        self._pages: list[Page] = []
         self._side_items: dict[int, QListWidgetItem] = {}
         self._current_review_idx: int | None = None
 
@@ -149,24 +145,16 @@ class TranslationPanel(QWidget):
         top_layout.addLayout(ctrl_row)
 
         # -- Progress section --------------------------------------------
-        self._progress_a_bar = QProgressBar()
-        self._progress_a_bar.setTextVisible(True)
-        self._progress_a_bar.setFormat("Стр. A: %v / %m")
-        self._progress_b_bar = QProgressBar()
-        self._progress_b_bar.setTextVisible(True)
-        self._progress_b_bar.setFormat("Стр. B: %v / %m")
-        self._progress_b_bar.hide()
+        self._progress_bar = QProgressBar()
+        self._progress_bar.setTextVisible(True)
+        self._progress_bar.setFormat("Страниц: %v / %m")
 
-        top_layout.addWidget(self._progress_a_bar)
-        top_layout.addWidget(self._progress_b_bar)
+        top_layout.addWidget(self._progress_bar)
 
         # -- Cost / tokens display ---------------------------------------
         cost_row = QHBoxLayout()
-        self._cost_a_label = QLabel("A: 0 tok · $0.00000")
-        self._cost_b_label = QLabel("B: 0 tok · $0.00000")
-        self._cost_b_label.hide()
-        cost_row.addWidget(self._cost_a_label)
-        cost_row.addWidget(self._cost_b_label)
+        self._cost_label = QLabel("0 tok · $0.00000")
+        cost_row.addWidget(self._cost_label)
         cost_row.addStretch()
         top_layout.addLayout(cost_row)
 
@@ -182,13 +170,13 @@ class TranslationPanel(QWidget):
 
         splitter.addWidget(top)
 
-        # Bottom half: problem paragraphs + editor + side panel
+        # Bottom half: problem pages + editor + side panel
         bottom = QSplitter(Qt.Orientation.Horizontal)
 
         bottom_left = QWidget()
         bottom_left_layout = QVBoxLayout(bottom_left)
 
-        # -- Problem pages ------------------------------------------
+        # -- Problem pages -----------------------------------------------
         prob_label = QLabel("Проблемные страницы:")
         prob_label.setStyleSheet("font-weight: bold;")
         bottom_left_layout.addWidget(prob_label)
@@ -247,7 +235,7 @@ class TranslationPanel(QWidget):
 
     def set_book(self, book_id: int | None) -> None:
         self._book_id = book_id
-        self._translation_a_id = None
+        self._translation_id = None
         self._start_btn.setEnabled(book_id is not None)
         self._export_btn.setEnabled(book_id is not None)
 
@@ -259,12 +247,11 @@ class TranslationPanel(QWidget):
         self,
         book_id: int,
         mode: str,
-        translation_a_id: int,
-        translation_b_id: int | None,
+        translation_id: int,
         current_index: int,
     ) -> None:
         self._book_id = book_id
-        self._translation_a_id = translation_a_id
+        self._translation_id = translation_id
         self._mode_combo.setCurrentText(mode)
         self.log(f"Сессия восстановлена (книга #{book_id}, шаг {current_index})")
 
@@ -273,7 +260,7 @@ class TranslationPanel(QWidget):
     # ------------------------------------------------------------------
 
     def _on_export_clicked(self) -> None:
-        if self._book_id is None or self._translation_a_id is None:
+        if self._book_id is None or self._translation_id is None:
             QMessageBox.warning(self, "Экспорт", "Нет активного перевода для экспорта.")
             return
 
@@ -286,7 +273,7 @@ class TranslationPanel(QWidget):
         if not file_path:
             return
 
-        if not check_translation_complete(self._db, self._translation_a_id):
+        if not check_translation_complete(self._db, self._translation_id):
             reply = QMessageBox.question(
                 self,
                 "Перевод не завершён",
@@ -301,7 +288,7 @@ class TranslationPanel(QWidget):
             result = export_to_markdown(
                 db=self._db,
                 book_id=self._book_id,
-                translation_id=self._translation_a_id,
+                translation_id=self._translation_id,
                 output_path=file_path,
                 include_original=True,
             )
@@ -310,6 +297,22 @@ class TranslationPanel(QWidget):
         except Exception as exc:
             QMessageBox.critical(self, "Ошибка экспорта", f"Не удалось сохранить файл:\n{exc}")
             self.log(f"Ошибка экспорта: {exc}")
+
+    def _build_job(
+        self,
+        cfg: dict,
+        mode: str,
+        model_id: str | None = None,
+    ) -> TranslationJob:
+        return TranslationJob(
+            model_id=model_id or cfg.get("last_model", ""),
+            temperature=Decimal(str(cfg.get("temperature", 0.3))),
+            top_p=Decimal(str(cfg.get("top_p", 0.9))),
+            max_tokens=int(cfg.get("max_tokens", 4096)),
+            style=cfg.get("style", "литературный"),
+            mode=mode,
+            target_language=self._lang_combo.currentText() or "русский",
+        )
 
     def _on_start(self) -> None:
         if self._book_id is None:
@@ -326,10 +329,9 @@ class TranslationPanel(QWidget):
 
         ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-        # --- worker A setup ---
-        job_a = self._build_job(cfg, mode)
-        if not job_a.model_id:
-            self.log("Ошибка: Model A не выбрана")
+        job = self._build_job(cfg, mode)
+        if not job.model_id:
+            self.log("Ошибка: модель не выбрана")
             return
 
         # --- empty book guard ---
@@ -343,73 +345,19 @@ class TranslationPanel(QWidget):
             )
             return
 
-        trans_a = self._db.create_translation(
+        trans = self._db.create_translation(
             book_id=self._book_id,
-            name=f"{mode} — {job_a.model_id} — {ts}",
-            model_id=job_a.model_id,
+            name=f"{mode} — {job.model_id} — {ts}",
+            model_id=job.model_id,
             source_type="parallel",
             mode=mode,
         )
-        self._translation_a_id = trans_a.id
-        self._pages_a = self._create_pages_for_translation(
-            book, trans_a.id
-        )
-
-        # --- worker B setup (comparison) ---
-        compare = cfg.get("comparison_enabled", False)
-        translation_b_id = None
-        pages_b = None
-        job_b = None
-
-        if compare:
-            model_b = cfg.get("last_model_b", "")
-            if model_b:
-                job_b = self._build_job(cfg, mode, model_b)
-                trans_b = self._db.create_translation(
-                    book_id=self._book_id,
-                    name=f"{mode} — {model_b} — {ts}",
-                    model_id=model_b,
-                    source_type="parallel",
-                    mode=mode,
-                )
-                translation_b_id = trans_b.id
-                pages_b = self._create_pages_for_translation(
-                    book, trans_b.id
-                )
-                self._progress_b_bar.setMaximum(len(pages_b))
-                self._progress_b_bar.setValue(0)
-                self._progress_b_bar.show()
-                self._cost_b_label.show()
-            else:
-                compare = False
-
-        # clear prior signal connections
-        try:
-            self._worker_mgr.progress_changed.disconnect()
-        except TypeError:
-            pass
-        try:
-            self._worker_mgr.progress_b_changed.disconnect()
-        except TypeError:
-            pass
-        try:
-            self._worker_mgr.worker_finished.disconnect()
-        except TypeError:
-            pass
-        try:
-            self._worker_mgr.page_done.disconnect()
-        except TypeError:
-            pass
-
-        self._worker_mgr.progress_changed.connect(self._on_progress_a)
-        self._worker_mgr.worker_finished.connect(self._on_worker_finished)
-        self._worker_mgr.page_done.connect(self._on_page_done)
-        if compare:
-            self._worker_mgr.progress_b_changed.connect(self._on_progress_b)
+        self._translation_id = trans.id
+        self._pages = self._create_pages_for_translation(book, trans.id)
 
         # Setup progress
-        self._progress_a_bar.setMaximum(len(self._pages_a))
-        self._progress_a_bar.setValue(0)
+        self._progress_bar.setMaximum(len(self._pages))
+        self._progress_bar.setValue(0)
 
         # Clear state
         self._problem_list.clear()
@@ -419,55 +367,45 @@ class TranslationPanel(QWidget):
         self._editor.hide()
 
         # Populate side panel with pending items
-        for idx, p in enumerate(self._pages_a):
+        for idx, p in enumerate(self._pages):
             item = self._make_side_item(idx, p)
             self._side_list.addItem(item)
             self._side_items[idx] = item
 
-        # Start
-        self._worker_mgr.start(
+        # Create and start worker
+        worker = TranslationWorker(
+            db=self._db,
+            engine=self._engine,
             book_id=self._book_id,
-            translation_a_id=trans_a.id,
-            job_a=job_a,
-            pages_a=self._pages_a,
-            start_index_a=0,
-            translation_b_id=translation_b_id,
-            job_b=job_b,
-            pages_b=pages_b,
-            start_index_b=0,
+            translation_id=trans.id,
+            job=job,
+            pages=self._pages,
+            current_index=0,
+            glossary_mgr=self._glossary_mgr,
         )
+        worker.progress_changed.connect(self._on_progress)
+        worker.finished.connect(self._on_worker_finished)
+        worker.page_done.connect(self._on_page_done)
+        worker.page_failed.connect(self._on_page_failed)
+        worker.needs_review.connect(self._on_needs_review)
+        worker.error_occurred.connect(self._on_error_occurred)
+        worker.interim_cost.connect(self._update_cost)
+
+        loop = asyncio.get_event_loop()
+        self._task = loop.create_task(worker.run())
+        self._worker = worker
 
         self._set_running_state(True)
-        self.log(f"Запущен перевод: {len(self._pages_a)} страниц, режим: {mode}")
-        if compare and job_b:
-            self.log(f" Model A: {job_a.model_id} | Model B: {job_b.model_id}")
-        else:
-            self.log(f" Model: {job_a.model_id}")
+        self.log(f"Запущен перевод: {len(self._pages)} страниц, режим: {mode}")
+        self.log(f" Модель: {job.model_id}")
 
-        self.translation_started.emit(trans_a.id, translation_b_id or 0)
+        self.translation_started.emit(trans.id)
 
         self._db.save_session(
             book_id=self._book_id,
             mode=mode,
-            translation_a_id=trans_a.id,
-            translation_b_id=translation_b_id,
+            translation_a_id=trans.id,
             current_page_index=0,
-        )
-
-    def _build_job(
-        self,
-        cfg: dict,
-        mode: str,
-        model_id: str | None = None,
-    ) -> TranslationJob:
-        return TranslationJob(
-            model_id=model_id or cfg.get("last_model_a", ""),
-            temperature=Decimal(str(cfg.get("temperature", 0.3))),
-            top_p=Decimal(str(cfg.get("top_p", 0.9))),
-            max_tokens=int(cfg.get("max_tokens", 4096)),
-            style=cfg.get("style", "литературный"),
-            mode=mode,
-            target_language=self._lang_combo.currentText() or "русский",
         )
 
     def _create_pages_for_translation(
@@ -492,25 +430,28 @@ class TranslationPanel(QWidget):
         return pages
 
     def _on_pause(self) -> None:
-        self._worker_mgr.pause()
+        if self._worker:
+            self._worker.pause()
         self._pause_btn.hide()
         self._resume_btn.show()
         self.log("Перевод приостановлен")
 
     def _on_resume(self) -> None:
-        self._worker_mgr.resume()
+        if self._worker:
+            self._worker.resume()
         self._resume_btn.hide()
         self._pause_btn.show()
         self.log("Перевод продолжен")
 
     def _on_stop(self) -> None:
-        self._worker_mgr.stop()
+        if self._worker:
+            self._worker.stop()
         self.log("Перевод остановлен пользователем")
         self._set_running_state(False)
 
     def _update_model_label(self) -> None:
         cfg = self._cfg.load_app_config()
-        model = cfg.get("last_model_a", "").strip()
+        model = cfg.get("last_model", "").strip()
         self._model_label.setText(f"Модель: {model}" if model else "Модель: —")
 
     # ------------------------------------------------------------------
@@ -542,18 +483,11 @@ class TranslationPanel(QWidget):
     # Worker signal handlers
     # ------------------------------------------------------------------
 
-    def _on_progress_a(self, done: int, total: int) -> None:
-        self._progress_a_bar.setMaximum(total)
-        self._progress_a_bar.setValue(done)
+    def _on_progress(self, done: int, total: int) -> None:
+        self._progress_bar.setMaximum(total)
+        self._progress_bar.setValue(done)
 
-    def _on_progress_b(self, done: int, total: int) -> None:
-        self._progress_b_bar.setMaximum(total)
-        self._progress_b_bar.setValue(done)
-
-    def _on_worker_finished(self, model_id: str) -> None:
-        self.log(f"Worker завершён: {model_id}")
-
-    def _on_all_finished(self) -> None:
+    def _on_worker_finished(self) -> None:
         self.log("Перевод завершён")
         self._set_running_state(False)
         self.translation_finished.emit()
@@ -588,34 +522,40 @@ class TranslationPanel(QWidget):
     # ------------------------------------------------------------------
 
     def _on_review_accepted(self, edited_text: str) -> None:
-        self._worker_mgr.submit_review(edited_text)
+        if self._worker:
+            self._worker.submit_review(edited_text)
         self._editor.hide()
         self._current_review_idx = None
 
     def _on_review_rejected(self) -> None:
-        self._worker_mgr.submit_review(None)
+        if self._worker:
+            self._worker.submit_review(None)
         self._editor.hide()
         self._current_review_idx = None
 
     def _on_review_back(self) -> None:
-        self._worker_mgr.go_back()
+        if self._worker:
+            self._worker.go_back()
         self._editor.hide()
         self._current_review_idx = None
 
     def _on_review_skip(self) -> None:
-        self._worker_mgr.submit_review(None)
+        if self._worker:
+            self._worker.submit_review(None)
         self._editor.hide()
         self._current_review_idx = None
 
     def _on_review_rephrase(self) -> None:
-        self._worker_mgr.rephrase()
+        if self._worker:
+            self._worker.rephrase()
         self._editor.hide()
         self._current_review_idx = None
 
     def _on_review_translate(self) -> None:
-        idx = self._editor.current_review_idx if hasattr(self._editor, 'current_review_idx') else None
-        if idx is not None and idx >= 0 and idx < len(self._pages_a):
-            self._worker_mgr.translate_page(idx)
+        idx = self._editor.current_review_idx
+        if idx is not None and idx >= 0 and idx < len(self._pages):
+            if self._worker:
+                self._worker.translate_page(idx)
         self._editor.hide()
         self._current_review_idx = None
 
@@ -627,9 +567,9 @@ class TranslationPanel(QWidget):
         idx = item.data(Qt.ItemDataRole.UserRole)
         if idx is None:
             return
-        if idx < 0 or idx >= len(self._pages_a):
+        if idx < 0 or idx >= len(self._pages):
             return
-        page = self._pages_a[idx]
+        page = self._pages[idx]
         self._editor.set_content(page.original_text, page.translated_text or "", idx)
         self._current_review_idx = idx
         self._editor.show()
@@ -680,8 +620,5 @@ class TranslationPanel(QWidget):
     # Cost update
     # ------------------------------------------------------------------
 
-    def _update_cost_a(self, tokens_in: int, tokens_out: int, cost: float) -> None:
-        self._cost_a_label.setText(f"A: {tokens_in + tokens_out} tok · ${cost:.5f}")
-
-    def _update_cost_b(self, tokens_in: int, tokens_out: int, cost: float) -> None:
-        self._cost_b_label.setText(f"B: {tokens_in + tokens_out} tok · ${cost:.5f}")
+    def _update_cost(self, tokens_in: int, tokens_out: int, cost: float) -> None:
+        self._cost_label.setText(f"{tokens_in + tokens_out} tok · ${cost:.5f}")

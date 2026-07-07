@@ -13,8 +13,6 @@ from PyQt6.QtWidgets import (
 from core.config import ConfigManager
 from gui.widgets.book_loader import BookLoaderWidget
 from utils.hash_utils import compute_file_hash
-from gui.widgets.glossary_panel import GlossaryPanel
-from gui.widgets.comparison_panel import ComparisonPanel
 from gui.widgets.settings_panel import SettingsPanel
 from gui.widgets.translation_panel import TranslationPanel
 from state.database import Database
@@ -40,20 +38,14 @@ class MainWindow(QMainWindow):
         self._engine = TranslatorEngine(self._cfg)
 
         # -- Panels ------------------------------------------------------
-        from core.glossary import GlossaryManager
         self._book_loader = BookLoaderWidget(self._db)
-        self._glossary_panel = GlossaryPanel(GlossaryManager(self._db))
-
         self._translation_panel = TranslationPanel(self._db, self._cfg, self._engine)
-        self._comparison_panel = ComparisonPanel(self._db)
         self._settings_panel = SettingsPanel(self._cfg)
 
         # -- Tab widget --------------------------------------------------
         self._tabs = QTabWidget()
         self._tabs.addTab(self._book_loader, "📖 Книга")
-        self._tabs.addTab(self._glossary_panel, "📖 Глоссарий")
         self._tabs.addTab(self._translation_panel, "🌐 Перевод")
-        self._tabs.addTab(self._comparison_panel, "🆚 Сравнение")
         self._tabs.addTab(self._settings_panel, "⚙ Настройки")
         self.setCentralWidget(self._tabs)
 
@@ -107,9 +99,6 @@ class MainWindow(QMainWindow):
 
     def _connect_signals(self) -> None:
         self._book_loader.book_loaded.connect(self._on_book_loaded)
-        self._translation_panel.translation_started.connect(
-            lambda *_: self._comparison_panel.refresh()
-        )
         self._translation_panel.translation_finished.connect(
             self._on_translation_finished
         )
@@ -121,13 +110,12 @@ class MainWindow(QMainWindow):
         book = self._db.load_book(book_id)
         if book is None:
             return
-        self._glossary_panel.load_book(book)
         self._translation_panel.set_book(book_id)
         self._tabs.setCurrentWidget(self._translation_panel)
         self._status.showMessage(
             f"Загружено: {book.title}  |  "
             f"{len(book.chapters)} глав, "
-            f"{sum(len(ch.paragraphs) for ch in book.chapters)} абзацев"
+            f"{len(book.pages)} страниц"
         )
 
     def _on_translation_finished(self) -> None:
@@ -143,11 +131,10 @@ class MainWindow(QMainWindow):
     def _on_about(self) -> None:
         QMessageBox.about(
             self,
-            "Book Translator",
-            "Batch translator for EPUB, FB2, PDF & TXT books\n"
-            "using LLM APIs.\n\n"
+            "Book Translator AI",
+            "Batch translator for TXT books using LLM APIs.\n\n"
             "Version 0.1.0\n"
-            "https://github.com/example/book-translator",
+            "https://github.com/RobberBobFl/book-translator-ai",
         )
 
     # ------------------------------------------------------------------
@@ -216,7 +203,7 @@ class MainWindow(QMainWindow):
                 f"Книга: {book.title}\n"
                 f"Прогресс: {idx}/{total}\n\n"
                 "Начать перевод заново или продолжить текущий (рискованно — "
-                "нумерация абзацев могла измениться)?"
+                "нумерация страниц могла измениться)?"
             )
             restart_btn = msg.addButton("Начать заново", QMessageBox.ButtonRole.YesRole)
             continue_btn = msg.addButton("Продолжить", QMessageBox.ButtonRole.NoRole)
@@ -238,7 +225,7 @@ class MainWindow(QMainWindow):
                 f"«{book.title}»."
             )
             msg.setInformativeText(
-                f"Переведено {idx} из {total} абзацев.\n\n"
+                f"Переведено {idx} из {total} страниц.\n\n"
                 "Продолжить?"
             )
             resume_btn = msg.addButton("Продолжить", QMessageBox.ButtonRole.YesRole)
@@ -254,12 +241,10 @@ class MainWindow(QMainWindow):
             # else resume_btn → fall through
 
         # --- Resume translation ---
-        self._glossary_panel.load_book(book)
         self._translation_panel.resume_session(
             book_id=book_id,
             mode=mode,
-            translation_a_id=session.get("translation_a_id", 0),
-            translation_b_id=session.get("translation_b_id"),
+            translation_id=session.get("translation_a_id", 0),
             current_index=idx,
         )
         self._translation_panel.set_book(book_id)
@@ -269,7 +254,6 @@ class MainWindow(QMainWindow):
         """Delete book and session so user can start fresh."""
         self._db.clear_session()
         self._db.delete_book(book_id)
-        self._glossary_panel.clear()
         self._translation_panel.set_book(None)
         self._tabs.setCurrentWidget(self._book_loader)
         self._status.showMessage("Сессия сброшена, загрузите книгу заново")
