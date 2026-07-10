@@ -9,6 +9,7 @@ from PyQt6.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
     QInputDialog,
+    QLabel,
     QLineEdit,
     QListWidget,
     QListWidgetItem,
@@ -19,6 +20,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from gui import i18n as gui_i18n
 from core.config import ConfigManager, normalize_model_name
 from core.models import Provider, ModelPricing
 
@@ -43,6 +45,7 @@ class SettingsPanel(QWidget):
 
         self._build_ui()
         self._load_settings()
+        self.retranslate_ui()
 
     # ------------------------------------------------------------------
     # UI
@@ -52,20 +55,20 @@ class SettingsPanel(QWidget):
         outer = QVBoxLayout(self)
 
         # -- Provider management ----------------------------------------
-        prov_group = QGroupBox("Поставщики API")
-        prov_layout = QVBoxLayout(prov_group)
+        self._prov_group = QGroupBox()
+        prov_layout = QVBoxLayout(self._prov_group)
 
         self._provider_list = QListWidget()
         self._provider_list.currentRowChanged.connect(self._on_provider_selected)
         prov_layout.addWidget(self._provider_list)
 
         prov_btn_row = QHBoxLayout()
-        self._add_prov_btn = QPushButton("➕ Добавить")
+        self._add_prov_btn = QPushButton()
         self._add_prov_btn.clicked.connect(self._on_add_provider)
-        self._edit_prov_btn = QPushButton("✏️ Редактировать")
+        self._edit_prov_btn = QPushButton()
         self._edit_prov_btn.clicked.connect(self._on_edit_provider)
         self._edit_prov_btn.setEnabled(False)
-        self._del_prov_btn = QPushButton("🗑️ Удалить")
+        self._del_prov_btn = QPushButton()
         self._del_prov_btn.clicked.connect(self._on_delete_provider)
         self._del_prov_btn.setEnabled(False)
 
@@ -75,24 +78,25 @@ class SettingsPanel(QWidget):
         prov_btn_row.addStretch()
         prov_layout.addLayout(prov_btn_row)
 
-        outer.addWidget(prov_group)
+        outer.addWidget(self._prov_group)
 
         # -- Model selection --------------------------------------------
-        model_group = QGroupBox("Модель для перевода")
-        model_layout = QFormLayout(model_group)
+        self._model_group = QGroupBox()
+        model_layout = QFormLayout(self._model_group)
 
         self._model_combo = QComboBox()
         self._model_combo.setEditable(True)
-        self._model_combo.setPlaceholderText("Выберите или введите модель...")
+        self._model_combo.setPlaceholderText(" ")
         self._model_combo.currentTextChanged.connect(self._on_setting_changed)
 
-        model_layout.addRow("Model:", self._model_combo)
+        self._model_lbl = QLabel()
+        model_layout.addRow(self._model_lbl, self._model_combo)
 
-        outer.addWidget(model_group)
+        outer.addWidget(self._model_group)
 
         # -- Translation parameters -------------------------------------
-        param_group = QGroupBox("Параметры перевода")
-        param_layout = QFormLayout(param_group)
+        self._param_group = QGroupBox()
+        param_layout = QFormLayout(self._param_group)
 
         self._temp_spin = QDoubleSpinBox()
         self._temp_spin.setRange(0.0, 1.0)
@@ -115,12 +119,16 @@ class SettingsPanel(QWidget):
         self._style_combo.addItems(_STYLE_OPTIONS)
         self._style_combo.currentTextChanged.connect(self._on_setting_changed)
 
-        param_layout.addRow("Temperature:", self._temp_spin)
-        param_layout.addRow("Top-p:", self._top_p_spin)
-        param_layout.addRow("Max tokens:", self._max_tokens_spin)
-        param_layout.addRow("Стиль:", self._style_combo)
+        self._temp_lbl = QLabel()
+        self._top_p_lbl = QLabel()
+        self._max_tokens_lbl = QLabel()
+        self._style_lbl = QLabel()
+        param_layout.addRow(self._temp_lbl, self._temp_spin)
+        param_layout.addRow(self._top_p_lbl, self._top_p_spin)
+        param_layout.addRow(self._max_tokens_lbl, self._max_tokens_spin)
+        param_layout.addRow(self._style_lbl, self._style_combo)
 
-        outer.addWidget(param_group)
+        outer.addWidget(self._param_group)
         outer.addStretch()
 
     # ------------------------------------------------------------------
@@ -234,8 +242,8 @@ class SettingsPanel(QWidget):
         provider = self._providers[row]
         answer = QMessageBox.question(
             self,
-            "Удалить провайдера",
-            f'Удалить «{provider.name}»?',
+            gui_i18n.tr("sp.delete_title"),
+            gui_i18n.tr("sp.delete_text", name=provider.name),
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
         )
         if answer != QMessageBox.StandardButton.Yes:
@@ -287,6 +295,24 @@ class SettingsPanel(QWidget):
     def get_style(self) -> str:
         return self._style_combo.currentText()
 
+    # ------------------------------------------------------------------
+    # Live retranslation
+    # ------------------------------------------------------------------
+
+    def retranslate_ui(self) -> None:
+        self._prov_group.setTitle(gui_i18n.tr("sp.providers"))
+        self._add_prov_btn.setText(gui_i18n.tr("sp.add"))
+        self._edit_prov_btn.setText(gui_i18n.tr("sp.edit"))
+        self._del_prov_btn.setText(gui_i18n.tr("sp.delete"))
+        self._model_group.setTitle(gui_i18n.tr("sp.model"))
+        self._model_combo.setPlaceholderText(gui_i18n.tr("sp.model_label"))
+        self._model_lbl.setText(gui_i18n.tr("sp.model_label"))
+        self._param_group.setTitle(gui_i18n.tr("sp.params"))
+        self._temp_lbl.setText(gui_i18n.tr("sp.temperature"))
+        self._top_p_lbl.setText(gui_i18n.tr("sp.top_p"))
+        self._max_tokens_lbl.setText(gui_i18n.tr("sp.max_tokens"))
+        self._style_lbl.setText(gui_i18n.tr("sp.style"))
+
 
 # ======================================================================
 # Provider add/edit dialog
@@ -307,7 +333,11 @@ class _ProviderDialog(QDialog):
         provider: Provider | None = None,
     ) -> None:
         super().__init__(parent)
-        self.setWindowTitle("Провайдер" if provider is None else "Редактировать провайдера")
+        self.setWindowTitle(
+            gui_i18n.tr("sp.provider_title")
+            if provider is None
+            else gui_i18n.tr("sp.provider_edit_title")
+        )
         self.setMinimumWidth(480)
         self._provider = provider
         self._loaded_models: dict[str, ModelPricing] = {}
@@ -329,14 +359,17 @@ class _ProviderDialog(QDialog):
         layout = QVBoxLayout()
         form = QFormLayout()
 
-        form.addRow("Название:", self._name_edit)
-        form.addRow("API Base URL:", self._url_edit)
-        form.addRow("API Key:", self._key_edit)
+        self._name_lbl = QLabel()
+        self._url_lbl = QLabel()
+        self._key_lbl = QLabel()
+        form.addRow(self._name_lbl, self._name_edit)
+        form.addRow(self._url_lbl, self._url_edit)
+        form.addRow(self._key_lbl, self._key_edit)
 
         # Ollama-specific button
         btn_row = QHBoxLayout()
-        self._load_ollama_btn = QPushButton("📥 Загрузить модели Ollama")
-        self._load_ollama_btn.setToolTip("Получить список моделей из локального Ollama (localhost:11434)")
+        self._load_ollama_btn = QPushButton()
+        self._load_ollama_btn.setToolTip(" ")
         self._load_ollama_btn.clicked.connect(self._on_load_ollama_models)
         self._load_ollama_btn.setVisible(False)  # Show only for Ollama URLs
         btn_row.addWidget(self._load_ollama_btn)
@@ -350,9 +383,9 @@ class _ProviderDialog(QDialog):
         self._on_url_changed(self._url_edit.text())
 
         btn_row2 = QHBoxLayout()
-        self._ok_btn = QPushButton("OK")
+        self._ok_btn = QPushButton()
         self._ok_btn.clicked.connect(self._on_ok)
-        self._cancel_btn = QPushButton("Отмена")
+        self._cancel_btn = QPushButton()
         self._cancel_btn.clicked.connect(self.reject)
         btn_row2.addStretch()
         btn_row2.addWidget(self._ok_btn)
@@ -360,6 +393,15 @@ class _ProviderDialog(QDialog):
         layout.addLayout(btn_row2)
 
         self.setLayout(layout)
+
+        # Apply translations to dialog-owned widgets.
+        self._name_lbl.setText(gui_i18n.tr("sp.name"))
+        self._url_lbl.setText(gui_i18n.tr("sp.base_url"))
+        self._key_lbl.setText(gui_i18n.tr("sp.api_key"))
+        self._load_ollama_btn.setText(gui_i18n.tr("sp.load_ollama"))
+        self._load_ollama_btn.setToolTip(gui_i18n.tr("sp.load_ollama_tooltip"))
+        self._ok_btn.setText(gui_i18n.tr("sp.ok"))
+        self._cancel_btn.setText(gui_i18n.tr("sp.cancel"))
 
     # ------------------------------------------------------------------
     # Auto-generate id from name
@@ -391,7 +433,8 @@ class _ProviderDialog(QDialog):
         """Fetch models from local Ollama instance."""
         url = self._url_edit.text().strip().rstrip("/")
         if not url:
-            QMessageBox.warning(self, "Ошибка", "Сначала укажите API Base URL")
+            QMessageBox.warning(self, gui_i18n.tr("sp.ollama_error_title"),
+                                gui_i18n.tr("sp.no_url"))
             return
 
         base_url = url
@@ -419,16 +462,15 @@ class _ProviderDialog(QDialog):
 
             if not models:
                 QMessageBox.information(
-                    self, "Нет моделей",
-                    "Ollama не вернул список моделей.\n"
-                    "Убедитесь: 1) ollama serve запущен, 2) есть модели (ollama list)"
+                    self, gui_i18n.tr("sp.ollama_error_title"),
+                    gui_i18n.tr("sp.no_models"),
                 )
                 return
 
             model, ok = QInputDialog.getItem(
                 self,
-                "Выберите модель Ollama",
-                "Доступные модели:",
+                gui_i18n.tr("sp.model_dialog_title"),
+                gui_i18n.tr("sp.model_dialog_text"),
                 sorted(models),
                 0,
                 False,
@@ -442,16 +484,15 @@ class _ProviderDialog(QDialog):
                 }
                 QMessageBox.information(
                     self,
-                    "Готово",
-                    f"Модель выбрана: ollama/{model}\nНажмите OK для сохранения.",
+                    gui_i18n.tr("sp.ok"),
+                    gui_i18n.tr("sp.model_selected", model=model),
                 )
 
         except Exception as exc:
             QMessageBox.warning(
                 self,
-                "Ошибка",
-                f"Не удалось загрузить модели Ollama:\n{exc}\n\n"
-                f"Проверьте: 1) ollama serve, 2) URL: {base_url}, 3) ollama list",
+                gui_i18n.tr("sp.ollama_error_title"),
+                gui_i18n.tr("sp.ollama_error_text", exc=exc, base_url=base_url),
             )
 
     # ------------------------------------------------------------------
@@ -460,10 +501,12 @@ class _ProviderDialog(QDialog):
 
     def _on_ok(self) -> None:
         if not self._name_edit.text().strip():
-            QMessageBox.warning(self, "Ошибка", "Название обязательно")
+            QMessageBox.warning(self, gui_i18n.tr("sp.ollama_error_title"),
+                                gui_i18n.tr("sp.name_required"))
             return
         if not self._url_edit.text().strip():
-            QMessageBox.warning(self, "Ошибка", "URL обязателен")
+            QMessageBox.warning(self, gui_i18n.tr("sp.ollama_error_title"),
+                                gui_i18n.tr("sp.url_required"))
             return
         self.accept()
 

@@ -10,6 +10,8 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from gui import i18n as gui_i18n
+
 
 class PageEditor(QWidget):
     """Shows original + editable translation; emit signals for user actions."""
@@ -24,14 +26,15 @@ class PageEditor(QWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._build_ui()
+        self.retranslate_ui()
 
     def _build_ui(self) -> None:
         layout = QVBoxLayout(self)
 
         # Original text (read-only)
-        orig_label = QLabel("Оригинал:")
-        orig_label.setStyleSheet("font-weight: bold;")
-        layout.addWidget(orig_label)
+        self._orig_label = QLabel()
+        self._orig_label.setStyleSheet("font-weight: bold;")
+        layout.addWidget(self._orig_label)
 
         self._orig_text = QPlainTextEdit()
         self._orig_text.setReadOnly(True)
@@ -39,9 +42,9 @@ class PageEditor(QWidget):
         layout.addWidget(self._orig_text)
 
         # Translation (editable)
-        trans_label = QLabel("Перевод:")
-        trans_label.setStyleSheet("font-weight: bold;")
-        layout.addWidget(trans_label)
+        self._trans_label = QLabel()
+        self._trans_label.setStyleSheet("font-weight: bold;")
+        layout.addWidget(self._trans_label)
 
         self._trans_text = QPlainTextEdit()
         self._trans_text.setMinimumHeight(80)
@@ -49,25 +52,25 @@ class PageEditor(QWidget):
 
         # Navigation buttons row
         nav_row = QHBoxLayout()
-        self._back_btn = QPushButton("◀ Назад")
+        self._back_btn = QPushButton()
         self._back_btn.clicked.connect(self._on_back)
         nav_row.addWidget(self._back_btn)
 
-        self._skip_btn = QPushButton("⏭ Пропустить")
+        self._skip_btn = QPushButton()
         self._skip_btn.clicked.connect(self._on_skip)
         nav_row.addWidget(self._skip_btn)
 
         nav_row.addStretch()
 
-        self._rephrase_btn = QPushButton("🔄 Перефразировать")
+        self._rephrase_btn = QPushButton()
         self._rephrase_btn.clicked.connect(self._on_rephrase)
         nav_row.addWidget(self._rephrase_btn)
 
-        self._translate_btn = QPushButton("🌐 Перевести")
+        self._translate_btn = QPushButton()
         self._translate_btn.clicked.connect(self._on_translate)
         nav_row.addWidget(self._translate_btn)
 
-        self._next_btn = QPushButton("Далее ▶")
+        self._next_btn = QPushButton()
         self._next_btn.setDefault(True)
         self._next_btn.clicked.connect(self._on_next)
         nav_row.addWidget(self._next_btn)
@@ -77,9 +80,9 @@ class PageEditor(QWidget):
         # Accept / Reject row
         action_row = QHBoxLayout()
         action_row.addStretch()
-        self._accept_btn = QPushButton("✅ Принять")
+        self._accept_btn = QPushButton()
         self._accept_btn.clicked.connect(self._on_accept)
-        self._reject_btn = QPushButton("↩️ Оставить как есть")
+        self._reject_btn = QPushButton()
         self._reject_btn.clicked.connect(self._on_reject)
         action_row.addWidget(self._accept_btn)
         action_row.addWidget(self._reject_btn)
@@ -126,3 +129,18 @@ class PageEditor(QWidget):
 
     def _on_translate(self) -> None:
         self.translate_requested.emit(self._current_review_idx)
+
+    # ------------------------------------------------------------------
+    # Live retranslation
+    # ------------------------------------------------------------------
+
+    def retranslate_ui(self) -> None:
+        self._orig_label.setText(gui_i18n.tr("pe.original"))
+        self._trans_label.setText(gui_i18n.tr("pe.translation"))
+        self._back_btn.setText(gui_i18n.tr("pe.back"))
+        self._skip_btn.setText(gui_i18n.tr("pe.skip"))
+        self._rephrase_btn.setText(gui_i18n.tr("pe.rephrase"))
+        self._translate_btn.setText(gui_i18n.tr("pe.translate"))
+        self._next_btn.setText(gui_i18n.tr("pe.next"))
+        self._accept_btn.setText(gui_i18n.tr("pe.accept"))
+        self._reject_btn.setText(gui_i18n.tr("pe.reject"))

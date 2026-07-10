@@ -40,6 +40,7 @@ _DEFAULT_CONFIG: dict[str, Any] = {
     "last_provider_id": "ollama",
     "target_language": "русский",
     "theme": "auto",
+    "ui_language": "auto",
 }
 
 

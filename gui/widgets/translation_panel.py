@@ -28,6 +28,7 @@ from exporters.markdown_exporter import check_translation_complete, export_to_ma
 from core.config import ConfigManager
 from core.glossary import GlossaryManager
 from core.models import Page, TranslationJob
+from gui import i18n as gui_i18n
 from gui.worker import TranslationWorker
 from gui.widgets.page_editor import PageEditor
 from state.database import Database
@@ -107,32 +108,34 @@ class TranslationPanel(QWidget):
         self._mode_combo.addItems(["auto", "interactive", "hybrid"])
         self._mode_combo.currentTextChanged.connect(self._on_mode_changed)
 
-        self._model_label = QLabel("Модель: —")
+        self._model_label = QLabel()
         self._model_label.setStyleSheet("font-weight: bold;")
 
         self._lang_combo = QComboBox()
         self._lang_combo.addItems(_LANGUAGE_OPTIONS)
-        self._lang_combo.setToolTip("Язык, на который выполняется перевод")
+        self._lang_combo.setToolTip(gui_i18n.tr("tp.language_tooltip"))
 
-        self._start_btn = QPushButton("▶ Начать")
+        self._start_btn = QPushButton(gui_i18n.tr("tp.start"))
         self._start_btn.clicked.connect(self._on_start)
-        self._pause_btn = QPushButton("⏸ Пауза")
+        self._pause_btn = QPushButton(gui_i18n.tr("tp.pause"))
         self._pause_btn.clicked.connect(self._on_pause)
-        self._resume_btn = QPushButton("▶ Продолжить")
+        self._resume_btn = QPushButton(gui_i18n.tr("tp.resume"))
         self._resume_btn.clicked.connect(self._on_resume)
         self._resume_btn.hide()
-        self._stop_btn = QPushButton("⏹ Стоп")
+        self._stop_btn = QPushButton(gui_i18n.tr("tp.stop"))
         self._stop_btn.clicked.connect(self._on_stop)
-        self._export_btn = QPushButton("💾 Сохранить как MD")
+        self._export_btn = QPushButton(gui_i18n.tr("tp.export"))
         self._export_btn.clicked.connect(self._on_export_clicked)
         self._export_btn.setEnabled(False)
 
-        ctrl_row.addWidget(QLabel("Режим:"))
+        self._mode_lbl = QLabel(gui_i18n.tr("tp.mode"))
+        ctrl_row.addWidget(self._mode_lbl)
         ctrl_row.addWidget(self._mode_combo)
         ctrl_row.addSpacing(10)
         ctrl_row.addWidget(self._model_label)
         ctrl_row.addSpacing(20)
-        ctrl_row.addWidget(QLabel("Язык:"))
+        self._lang_lbl = QLabel(gui_i18n.tr("tp.language"))
+        ctrl_row.addWidget(self._lang_lbl)
         ctrl_row.addWidget(self._lang_combo)
         ctrl_row.addSpacing(20)
         ctrl_row.addWidget(self._start_btn)
@@ -147,7 +150,7 @@ class TranslationPanel(QWidget):
         # -- Progress section --------------------------------------------
         self._progress_bar = QProgressBar()
         self._progress_bar.setTextVisible(True)
-        self._progress_bar.setFormat("Страниц: %v / %m")
+        self._progress_bar.setFormat(gui_i18n.tr("tp.progress"))
 
         top_layout.addWidget(self._progress_bar)
 
@@ -159,9 +162,9 @@ class TranslationPanel(QWidget):
         top_layout.addLayout(cost_row)
 
         # -- Log ---------------------------------------------------------
-        log_label = QLabel("Лог перевода:")
-        log_label.setStyleSheet("font-weight: bold;")
-        top_layout.addWidget(log_label)
+        self._log_label = QLabel(gui_i18n.tr("tp.log_label"))
+        self._log_label.setStyleSheet("font-weight: bold;")
+        top_layout.addWidget(self._log_label)
 
         self._log_text = QPlainTextEdit()
         self._log_text.setReadOnly(True)
@@ -177,9 +180,9 @@ class TranslationPanel(QWidget):
         bottom_left_layout = QVBoxLayout(bottom_left)
 
         # -- Problem pages -----------------------------------------------
-        prob_label = QLabel("Проблемные страницы:")
-        prob_label.setStyleSheet("font-weight: bold;")
-        bottom_left_layout.addWidget(prob_label)
+        self._problem_label = QLabel(gui_i18n.tr("tp.problem_pages"))
+        self._problem_label.setStyleSheet("font-weight: bold;")
+        bottom_left_layout.addWidget(self._problem_label)
 
         self._problem_list = QListWidget()
         bottom_left_layout.addWidget(self._problem_list, 1)
@@ -253,7 +256,7 @@ class TranslationPanel(QWidget):
         self._book_id = book_id
         self._translation_id = translation_id
         self._mode_combo.setCurrentText(mode)
-        self.log(f"Сессия восстановлена (книга #{book_id}, шаг {current_index})")
+        self.log(gui_i18n.tr("tp.resume_session", book_id=book_id, current_index=current_index))
 
     # ------------------------------------------------------------------
     # Controls
@@ -261,14 +264,16 @@ class TranslationPanel(QWidget):
 
     def _on_export_clicked(self) -> None:
         if self._book_id is None or self._translation_id is None:
-            QMessageBox.warning(self, "Экспорт", "Нет активного перевода для экспорта.")
+            QMessageBox.warning(
+                self, gui_i18n.tr("tp.export"), gui_i18n.tr("tp.export_no_active")
+            )
             return
 
         file_path, _ = QFileDialog.getSaveFileName(
             self,
-            "Сохранить перевод как Markdown",
+            gui_i18n.tr("tp.export_title"),
             "translation.md",
-            "Markdown files (*.md);;All files (*)",
+            gui_i18n.tr("tp.export_filter"),
         )
         if not file_path:
             return
@@ -276,8 +281,8 @@ class TranslationPanel(QWidget):
         if not check_translation_complete(self._db, self._translation_id):
             reply = QMessageBox.question(
                 self,
-                "Перевод не завершён",
-                "Перевод ещё не завершён. Экспортировать как есть?",
+                gui_i18n.tr("tp.not_complete.title"),
+                gui_i18n.tr("tp.not_complete.text"),
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                 QMessageBox.StandardButton.No,
             )
@@ -292,11 +297,16 @@ class TranslationPanel(QWidget):
                 output_path=file_path,
                 include_original=True,
             )
-            QMessageBox.information(self, "Экспорт", f"Перевод сохранён:\n{result}")
-            self.log(f"Экспорт завершён: {result}")
+            QMessageBox.information(
+                self, gui_i18n.tr("tp.export"), gui_i18n.tr("tp.export_done", result=result)
+            )
+            self.log(gui_i18n.tr("tp.export_done", result=result))
         except Exception as exc:
-            QMessageBox.critical(self, "Ошибка экспорта", f"Не удалось сохранить файл:\n{exc}")
-            self.log(f"Ошибка экспорта: {exc}")
+            QMessageBox.critical(
+                self, gui_i18n.tr("tp.export_error.title"),
+                gui_i18n.tr("tp.export_error.text", exc=exc),
+            )
+            self.log(gui_i18n.tr("tp.export_error.text", exc=exc))
 
     def _build_job(
         self,
@@ -316,7 +326,7 @@ class TranslationPanel(QWidget):
 
     def _on_start(self) -> None:
         if self._book_id is None:
-            self.log("Ошибка: книга не выбрана")
+            self.log(gui_i18n.tr("tp.err_book_not_selected"))
             return
 
         cfg = self._cfg.load_app_config()
@@ -324,24 +334,23 @@ class TranslationPanel(QWidget):
 
         book = self._db.load_book(self._book_id)
         if book is None:
-            self.log("Ошибка: книга не найдена")
+            self.log(gui_i18n.tr("tp.err_book_not_found"))
             return
 
         ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
         job = self._build_job(cfg, mode)
         if not job.model_id:
-            self.log("Ошибка: модель не выбрана")
+            self.log(gui_i18n.tr("tp.err_model_not_selected"))
             return
 
         # --- empty book guard ---
         if not book.pages:
-            self.log("Ошибка: книга не содержит страниц для перевода")
+            self.log(gui_i18n.tr("tp.err_no_pages"))
             QMessageBox.warning(
                 self,
-                "Нет страниц",
-                "В книге нет страниц для перевода.\n"
-                "Возможно, файл пуст или повреждён.",
+                gui_i18n.tr("tp.no_pages.title"),
+                gui_i18n.tr("tp.no_pages.text"),
             )
             return
 
@@ -396,8 +405,8 @@ class TranslationPanel(QWidget):
         self._worker = worker
 
         self._set_running_state(True)
-        self.log(f"Запущен перевод: {len(self._pages)} страниц, режим: {mode}")
-        self.log(f" Модель: {job.model_id}")
+        self.log(gui_i18n.tr("tp.started", pages=len(self._pages), mode=mode))
+        self.log(gui_i18n.tr("tp.model_log", model=job.model_id))
 
         self.translation_started.emit(trans.id)
 
@@ -434,25 +443,47 @@ class TranslationPanel(QWidget):
             self._worker.pause()
         self._pause_btn.hide()
         self._resume_btn.show()
-        self.log("Перевод приостановлен")
+        self.log(gui_i18n.tr("tp.paused"))
 
     def _on_resume(self) -> None:
         if self._worker:
             self._worker.resume()
         self._resume_btn.hide()
         self._pause_btn.show()
-        self.log("Перевод продолжен")
+        self.log(gui_i18n.tr("tp.resumed"))
 
     def _on_stop(self) -> None:
         if self._worker:
             self._worker.stop()
-        self.log("Перевод остановлен пользователем")
+        self.log(gui_i18n.tr("tp.stopped"))
         self._set_running_state(False)
 
     def _update_model_label(self) -> None:
         cfg = self._cfg.load_app_config()
         model = cfg.get("last_model", "").strip()
-        self._model_label.setText(f"Модель: {model}" if model else "Модель: —")
+        self._model_label.setText(
+            gui_i18n.tr("tp.model", model=model) if model
+            else gui_i18n.tr("tp.model", model="—")
+        )
+
+    # ------------------------------------------------------------------
+    # Live retranslation
+    # ------------------------------------------------------------------
+
+    def retranslate_ui(self) -> None:
+        """Re-apply all UI strings for the active language."""
+        self._mode_lbl.setText(gui_i18n.tr("tp.mode"))
+        self._lang_lbl.setText(gui_i18n.tr("tp.language"))
+        self._start_btn.setText(gui_i18n.tr("tp.start"))
+        self._pause_btn.setText(gui_i18n.tr("tp.pause"))
+        self._resume_btn.setText(gui_i18n.tr("tp.resume"))
+        self._stop_btn.setText(gui_i18n.tr("tp.stop"))
+        self._export_btn.setText(gui_i18n.tr("tp.export"))
+        self._progress_bar.setFormat(gui_i18n.tr("tp.progress"))
+        self._log_label.setText(gui_i18n.tr("tp.log_label"))
+        self._problem_label.setText(gui_i18n.tr("tp.problem_pages"))
+        self._lang_combo.setToolTip(gui_i18n.tr("tp.language_tooltip"))
+        self._update_model_label()
 
     # ------------------------------------------------------------------
     # Hotkey actions
@@ -475,9 +506,9 @@ class TranslationPanel(QWidget):
     def force_commit(self) -> None:
         try:
             self._db.conn.commit()
-            self.log("Прогресс сохранён")
+            self.log(gui_i18n.tr("tp.progress_saved"))
         except Exception as exc:
-            self.log(f"Ошибка сохранения: {exc}")
+            self.log(gui_i18n.tr("tp.save_error", exc=exc))
 
     # ------------------------------------------------------------------
     # Worker signal handlers
@@ -488,12 +519,15 @@ class TranslationPanel(QWidget):
         self._progress_bar.setValue(done)
 
     def _on_worker_finished(self) -> None:
-        self.log("Перевод завершён")
+        self.log(gui_i18n.tr("tp.finished"))
         self._set_running_state(False)
         self.translation_finished.emit()
 
     def _on_error_occurred(self, message: str) -> None:
-        QMessageBox.critical(self, "Критическая ошибка", f"Перевод остановлен:\n{message}")
+        QMessageBox.critical(
+            self, gui_i18n.tr("tp.critical_title"),
+            gui_i18n.tr("tp.critical", message=message),
+        )
         self.log(f"Критическая ошибка: {message}")
         self._set_running_state(False)
 
@@ -512,7 +546,7 @@ class TranslationPanel(QWidget):
     def _on_page_failed(self, idx: int, error: str) -> None:
         item = QListWidgetItem(f"#стр.{idx}: {error}")
         self._problem_list.addItem(item)
-        self.log(f"Ошибка страницы #{idx}: {error}")
+        self.log(gui_i18n.tr("tp.page_failed", idx=idx, error=error))
         side = self._side_items.get(idx)
         if side is not None:
             side.setBackground(self._COLOR_FAILED)

@@ -16,6 +16,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from gui import i18n as gui_i18n
 from loguru import logger
 
 from core.models import Book
@@ -62,6 +63,7 @@ class BookLoaderWidget(QWidget):
         self._current_book: Book | None = None
 
         self._build_ui()
+        self.retranslate_ui()
 
     # ------------------------------------------------------------------
     # UI construction
@@ -74,16 +76,12 @@ class BookLoaderWidget(QWidget):
         layout.setSpacing(12)
 
         # Drop zone
-        self._drop_label = QLabel(
-            "📂  Перетащите файл книги сюда\n"
-            "или воспользуйтесь кнопкой «Открыть файл»"
-        )
+        self._drop_label = QLabel()
         self._drop_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._drop_label.setMinimumHeight(160)
         self._drop_label.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
         )
-        self._drop_label.setStyleSheet(self._drop_stylesheet(False))
         self._drop_label.setWordWrap(True)
         layout.addWidget(self._drop_label)
 
@@ -91,7 +89,7 @@ class BookLoaderWidget(QWidget):
         btn_row = QHBoxLayout()
         btn_row.addStretch()
 
-        self._open_btn = QPushButton("📂  Открыть файл...")
+        self._open_btn = QPushButton()
         self._open_btn.setMinimumHeight(36)
         self._open_btn.clicked.connect(self._on_open_clicked)
         btn_row.addWidget(self._open_btn)
@@ -108,20 +106,28 @@ class BookLoaderWidget(QWidget):
         self._paragraphs_label = QLabel("")
         self._format_label = QLabel("")
 
-        for label, widget in [
-            ("Название:", self._title_label),
-            ("Глав:", self._chapters_label),
-            ("Страниц:", self._pages_label),
-            ("Всего символов:", self._paragraphs_label),
-            ("Формат:", self._format_label),
+        self._title_lbl = QLabel()
+        self._chapters_lbl = QLabel()
+        self._pages_lbl = QLabel()
+        self._chars_lbl = QLabel()
+        self._format_lbl = QLabel()
+
+        self._info_form.addRow(self._title_lbl, self._title_label)
+        self._info_form.addRow(self._chapters_lbl, self._chapters_label)
+        self._info_form.addRow(self._pages_lbl, self._pages_label)
+        self._info_form.addRow(self._chars_lbl, self._paragraphs_label)
+        self._info_form.addRow(self._format_lbl, self._format_label)
+
+        for widget in [
+            self._title_label,
+            self._chapters_label,
+            self._pages_label,
+            self._paragraphs_label,
+            self._format_label,
         ]:
-            self._info_form.addRow(label, widget)
             widget.setVisible(False)
 
-        self._legacy_warning = QLabel(
-            "⚠️  Книга загружена в старой версии — страницы отсутствуют.\n"
-            "Перезагрузите файл для работы с новой версией."
-        )
+        self._legacy_warning = QLabel()
         self._legacy_warning.setStyleSheet(
             "color: #e67e22; font-weight: bold; padding: 8px;"
             " background-color: #fef9e7; border: 1px solid #f5cba7;"
@@ -170,9 +176,8 @@ class BookLoaderWidget(QWidget):
     # ------------------------------------------------------------------
 
     def _on_open_clicked(self) -> None:
-        filter_str = "Текст (*.txt);;Все файлы (*)"
         path, _ = QFileDialog.getOpenFileName(
-            self, "Выберите файл книги", "", filter_str,
+            self, gui_i18n.tr("menu.open"), "", gui_i18n.tr("bl.filter"),
         )
         if path:
             self._load_file(path)
@@ -188,9 +193,8 @@ class BookLoaderWidget(QWidget):
         if ext not in _PARSERS:
             QMessageBox.warning(
                 self,
-                "Неподдерживаемый формат",
-                f"Файлы .{ext} не поддерживаются.\n"
-                f"Доступные форматы: {', '.join(SUPPORTED_FORMATS)}",
+                gui_i18n.tr("bl.unsupported.title"),
+                gui_i18n.tr("bl.unsupported.text", ext=ext, formats=", ".join(SUPPORTED_FORMATS)),
             )
             return
 
@@ -200,9 +204,8 @@ class BookLoaderWidget(QWidget):
         if existing is not None and existing.file_hash != file_hash:
             answer = QMessageBox.question(
                 self,
-                "Файл изменился",
-                "Этот файл уже загружался, но его содержимое изменилось.\n"
-                "Начать заново?",
+                gui_i18n.tr("bl.file_changed.title"),
+                gui_i18n.tr("bl.file_changed.text"),
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
             )
             if answer == QMessageBox.StandardButton.Yes:
@@ -218,7 +221,10 @@ class BookLoaderWidget(QWidget):
         # Parse
         parser = _get_parser(ext)
         if parser is None:
-            QMessageBox.critical(self, "Ошибка", f"Не удалось найти парсер для .{ext}")
+            QMessageBox.critical(
+                self, gui_i18n.tr("bl.unsupported.title"),
+                gui_i18n.tr("bl.unsupported.text", ext=ext, formats=", ".join(SUPPORTED_FORMATS)),
+            )
             return
 
         try:
@@ -226,8 +232,8 @@ class BookLoaderWidget(QWidget):
         except Exception as exc:
             QMessageBox.critical(
                 self,
-                "Ошибка парсинга",
-                f"Не удалось прочитать файл:\n{exc}",
+                gui_i18n.tr("bl.parse_error.title"),
+                gui_i18n.tr("bl.parse_error.text", exc=exc),
             )
             return
 
@@ -240,9 +246,8 @@ class BookLoaderWidget(QWidget):
         if not book.pages:
             QMessageBox.warning(
                 self,
-                "Пустая книга",
-                "Файл не содержит текста для перевода.\n"
-                "Проверьте содержимое файла.",
+                gui_i18n.tr("bl.empty_book.title"),
+                gui_i18n.tr("bl.empty_book.text"),
             )
             return
 
@@ -252,8 +257,8 @@ class BookLoaderWidget(QWidget):
         except Exception as exc:
             QMessageBox.critical(
                 self,
-                "Ошибка БД",
-                f"Не удалось сохранить книгу в базу:\n{exc}",
+                gui_i18n.tr("bl.db_error.title"),
+                gui_i18n.tr("bl.db_error.text", exc=exc),
             )
             return
 
@@ -293,8 +298,12 @@ class BookLoaderWidget(QWidget):
             widget.setVisible(True)
 
         self._drop_label.setText(
-            f"✅  Загружено: {book.title}\n"
-            f"{len(book.chapters)} глав, {len(book.pages) if book.pages else 0} страниц"
+            gui_i18n.tr(
+                "bl.loaded",
+                title=book.title,
+                chapters=len(book.chapters),
+                pages=len(book.pages) if book.pages else 0,
+            )
         )
         self._drop_label.setStyleSheet(self._drop_stylesheet(False, loaded=True))
 
@@ -317,3 +326,29 @@ class BookLoaderWidget(QWidget):
             "border: 2px dashed #bdc3c7; border-radius: 10px;"
             " background-color: #f8f9fa; padding: 20px; font-size: 14px; color: #7f8c8d;"
         )
+
+    # ------------------------------------------------------------------
+    # Live retranslation
+    # ------------------------------------------------------------------
+
+    def retranslate_ui(self) -> None:
+        if self._current_book is not None:
+            self._show_book_info(self._current_book)
+        else:
+            self._drop_label.setText(gui_i18n.tr("bl.drop_hint"))
+            for widget in [
+                self._title_label,
+                self._chapters_label,
+                self._pages_label,
+                self._paragraphs_label,
+                self._format_label,
+            ]:
+                widget.setVisible(False)
+
+        self._open_btn.setText(gui_i18n.tr("bl.open_file"))
+        self._legacy_warning.setText(gui_i18n.tr("bl.legacy_warning"))
+        self._title_lbl.setText(gui_i18n.tr("bl.title"))
+        self._chapters_lbl.setText(gui_i18n.tr("bl.chapters"))
+        self._pages_lbl.setText(gui_i18n.tr("bl.pages"))
+        self._chars_lbl.setText(gui_i18n.tr("bl.chars"))
+        self._format_lbl.setText(gui_i18n.tr("bl.format"))
