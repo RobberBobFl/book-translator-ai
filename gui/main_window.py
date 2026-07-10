@@ -2,8 +2,10 @@
 
 from pathlib import Path
 
+from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QAction, QKeySequence, QShortcut
 from PyQt6.QtWidgets import (
+    QComboBox,
     QMainWindow,
     QMessageBox,
     QStatusBar,
@@ -11,6 +13,7 @@ from PyQt6.QtWidgets import (
 )
 
 from core.config import ConfigManager
+from gui import theme as gui_theme
 from gui.widgets.book_loader import BookLoaderWidget
 from utils.hash_utils import compute_file_hash
 from gui.widgets.settings_panel import SettingsPanel
@@ -59,6 +62,10 @@ class MainWindow(QMainWindow):
 
         # -- Hotkeys -----------------------------------------------------
         self._build_hotkeys()
+
+        # -- Theme selector (top-right of the menu bar) ------------------
+        self._build_theme_selector()
+        gui_theme.apply_theme(self._cfg.load_app_config().get("theme", "auto"))
 
         # -- Signal wiring -----------------------------------------------
         self._connect_signals()
@@ -127,6 +134,38 @@ class MainWindow(QMainWindow):
 
     def _on_menu_open(self) -> None:
         self._book_loader._on_open_clicked()
+
+    def _build_theme_selector(self) -> None:
+        """Add a light/dark/auto selector to the top-right of the menu bar."""
+        self._theme_combo = QComboBox()
+        self._theme_combo.addItems(
+            [gui_theme.theme_label(gui_theme.THEME_AUTO),
+             gui_theme.theme_label(gui_theme.THEME_LIGHT),
+             gui_theme.theme_label(gui_theme.THEME_DARK)]
+        )
+        self._theme_combo.setToolTip("Тема оформления")
+        self._theme_combo.setMinimumWidth(120)
+        self._theme_combo.setMaximumWidth(150)
+
+        cfg = self._cfg.load_app_config()
+        self._theme_combo.setCurrentText(
+            gui_theme.theme_label(cfg.get("theme", "auto"))
+        )
+        self._theme_combo.currentTextChanged.connect(self._on_theme_changed)
+        self.menuBar().setCornerWidget(
+            self._theme_combo, Qt.Corner.TopRightCorner
+        )
+
+    def _on_theme_changed(self, label: str) -> None:
+        theme = gui_theme.label_to_theme(label)
+        cfg = self._cfg.load_app_config()
+        cfg["theme"] = theme
+        self._cfg.save_app_config(cfg)
+        gui_theme.apply_theme(theme)
+        resolved = gui_theme.resolve_theme(theme)
+        self._status.showMessage(
+            f"Тема: {gui_theme.theme_label(resolved)}"
+        )
 
     def _on_about(self) -> None:
         QMessageBox.about(
