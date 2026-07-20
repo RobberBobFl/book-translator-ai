@@ -15,6 +15,18 @@ from core.config import normalize_model_name
 
 logger = logging.getLogger(__name__)
 
+# Providers that litellm routes natively (pass model + key through verbatim).
+# Anything else (LM Studio, custom OpenAI-compatible local servers, ...) is
+# treated as an OpenAI-compatible endpoint.
+_NATIVE_CLOUD = {
+    "openai", "anthropic", "deepseek", "groq", "together_ai",
+    "openrouter", "azure", "gemini", "bedrock", "vertex_ai",
+    "xai", "cohere", "mistral",
+}
+# Always force JSON content-type — some local servers (Ollama) reject the
+# request with HTTP 415 otherwise.
+_JSON_HEADERS = {"Content-Type": "application/json"}
+
 
 # ---------------------------------------------------------------------------
 # Custom exception
@@ -77,6 +89,53 @@ class TranslatorEngine:
         return None
 
     # ------------------------------------------------------------------
+    # Call resolution (provider -> litellm args)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _resolve_call(
+        model_id: str, provider_cfg: dict | None
+    ) -> tuple[str, str | None, str | None]:
+        """Map a stored ``provider/model`` id to litellm call arguments.
+
+        Returns ``(litellm_model, api_key, api_base)``.
+
+        * Ollama  -> native ``ollama/...`` routing, no key needed.
+        * Cloud   -> native routing (openai/anthropic/...), real key.
+        * LM Studio / any other local OpenAI-compatible server
+                  -> ``openai/<name>`` with a dummy key and ``/v1`` appended
+                    to the base URL (litellm adds ``/chat/completions``).
+        """
+        if not provider_cfg:
+            return model_id, None, None
+
+        base = provider_cfg.get("base_url")
+        key = provider_cfg.get("api_key")
+        prefix = model_id.split("/", 1)[0]
+
+        # Decide by BASE URL, not by the (often mislabeled) model prefix.
+        # Real Ollama listens on :11434; everything else local is treated as
+        # an OpenAI-compatible server (LM Studio, custom, ...).
+        is_ollama = "11434" in (base or "")
+        is_local = bool(base) and any(
+            h in base for h in ("localhost", "127.0.0.1", "0.0.0.0")
+        )
+        native_cloud = prefix in _NATIVE_CLOUD and not is_local
+
+        if is_ollama:
+            litellm_model = (
+                model_id if model_id.startswith("ollama/") else f"ollama/{model_id}"
+            )
+            return litellm_model, key, base
+        if native_cloud:
+            return model_id, key, base
+
+        # OpenAI-compatible local / custom server (LM Studio, etc.)
+        name = model_id.split("/", 1)[1] if "/" in model_id else model_id
+        api_base = (base.rstrip("/") + "/v1") if base else base
+        return f"openai/{name}", (key or "not-needed"), api_base
+
+    # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
 
@@ -113,18 +172,26 @@ class TranslatorEngine:
         Returns ``(True, "")`` on success or ``(False, error_message)``.
         """
         provider_cfg = self._get_provider_for_model(model_id)
-        api_key = provider_cfg["api_key"] if provider_cfg else None
-        base_url = provider_cfg["base_url"] if provider_cfg else None
+        litellm_model, api_key, api_base = self._resolve_call(model_id, provider_cfg)
+
+        logger.info(
+            "Validating | model=%s | api_key=%s... | api_base=%s",
+            litellm_model,
+            api_key[:10] if api_key else "None",
+            api_base or "None",
+        )
+
         try:
             kwargs: dict = dict(
-                model=model_id,
+                model=litellm_model,
                 messages=[{"role": "user", "content": "test"}],
                 max_tokens=1,
             )
             if api_key:
                 kwargs["api_key"] = api_key
-            if base_url:
-                kwargs["base_url"] = base_url
+            if api_base:
+                kwargs["api_base"] = api_base
+            kwargs["extra_headers"] = _JSON_HEADERS
             await self._client.acompletion(**kwargs)
             return True, ""
         except CriticalTranslationError as e:
@@ -179,21 +246,20 @@ class TranslatorEngine:
         max_retries: int,
     ) -> TranslationResult:
         provider_cfg = self._get_provider_for_model(model_id)
-        api_key = provider_cfg["api_key"] if provider_cfg else None
-        base_url = provider_cfg["base_url"] if provider_cfg else None
+        litellm_model, api_key, api_base = self._resolve_call(model_id, provider_cfg)
 
         logger.info(
-            "Translating | model=%s | api_key=%s... | base_url=%s",
-            model_id,
+            "Translating | model=%s | api_key=%s... | api_base=%s",
+            litellm_model,
             api_key[:10] if api_key else "None",
-            base_url or "None",
+            api_base or "None",
         )
 
         last_exc: Exception | None = None
         for attempt in range(max_retries + 1):
             try:
                 kwargs: dict = dict(
-                    model=model_id,
+                    model=litellm_model,
                     messages=messages,
                     temperature=temperature,
                     top_p=top_p,
@@ -201,8 +267,9 @@ class TranslatorEngine:
                 )
                 if api_key:
                     kwargs["api_key"] = api_key
-                if base_url:
-                    kwargs["base_url"] = base_url
+                if api_base:
+                    kwargs["api_base"] = api_base
+                kwargs["extra_headers"] = _JSON_HEADERS
                 response = await self._client.acompletion(**kwargs)
                 return self._parse_response(response, model_id)
 

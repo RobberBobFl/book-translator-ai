@@ -39,6 +39,8 @@ _DEFAULT_CONFIG: dict[str, Any] = {
     "style": "литературный",
     "last_provider_id": "ollama",
     "target_language": "русский",
+    "chunk_size": 2000,
+    "context_pages": 2,
     "theme": "auto",
     "ui_language": "auto",
 }

@@ -13,6 +13,8 @@ take one of three values: ``"auto"``, ``"ru"`` or ``"en"``.
 
 from __future__ import annotations
 
+import os
+
 from PyQt6.QtCore import QLocale
 
 # ---------------------------------------------------------------------------
@@ -155,8 +157,8 @@ STRINGS: dict[str, dict[str, str]] = {
         "en": "✅  Loaded: {title}\n{chapters} chapters, {pages} pages",
     },
     "bl.filter": {
-        "ru": "Текст (*.txt);;Все файлы (*)",
-        "en": "Text (*.txt);;All files (*)",
+        "ru": "Книги (*.txt *.epub *.fb2 *.pdf);;Все файлы (*)",
+        "en": "Books (*.txt *.epub *.fb2 *.pdf);;All files (*)",
     },
     "bl.unsupported.title": {
         "ru": "Неподдерживаемый формат",
@@ -203,7 +205,21 @@ STRINGS: dict[str, dict[str, str]] = {
     "tp.pause": {"ru": "⏸ Пауза", "en": "⏸ Pause"},
     "tp.resume": {"ru": "▶ Продолжить", "en": "▶ Resume"},
     "tp.stop": {"ru": "⏹ Стоп", "en": "⏹ Stop"},
-    "tp.export": {"ru": "💾 Сохранить как MD", "en": "💾 Save as MD"},
+    "tp.export": {"ru": "💾 Экспорт", "en": "💾 Export"},
+    "tp.glossary": {"ru": "📖 Глоссарий", "en": "📖 Glossary"},
+    "tp.format": {"ru": "Формат", "en": "Format"},
+    "tp.format_tooltip": {
+        "ru": "Формат сохранения перевода",
+        "en": "Translation output format",
+    },
+    "tp.fmt_markdown": {"ru": "Markdown", "en": "Markdown"},
+    "tp.fmt_epub": {"ru": "EPUB", "en": "EPUB"},
+    "tp.fmt_pdf": {"ru": "PDF", "en": "PDF"},
+    "tp.only_translation": {"ru": "Только перевод", "en": "Translation only"},
+    "tp.only_translation_tooltip": {
+        "ru": "Не включать оригинал в экспорт",
+        "en": "Exclude the original text from export",
+    },
     "tp.progress": {"ru": "Страниц: %v / %m", "en": "Pages: %v / %m"},
     "tp.log_label": {"ru": "Лог перевода:", "en": "Translation log:"},
     "tp.problem_pages": {
@@ -211,8 +227,29 @@ STRINGS: dict[str, dict[str, str]] = {
         "en": "Problem pages:",
     },
     "tp.export_title": {
-        "ru": "Сохранить перевод как Markdown",
-        "en": "Save translation as Markdown",
+        "ru": "Сохранить перевод",
+        "en": "Save translation",
+    },
+    "tp.export_filter_md": {
+        "ru": "Markdown (*.md);;Все файлы (*)",
+        "en": "Markdown (*.md);;All files (*)",
+    },
+    "tp.export_filter_epub": {
+        "ru": "EPUB (*.epub);;Все файлы (*)",
+        "en": "EPUB (*.epub);;All files (*)",
+    },
+    "tp.export_filter_pdf": {
+        "ru": "PDF (*.pdf);;Все файлы (*)",
+        "en": "PDF (*.pdf);;All files (*)",
+    },
+    "tp.pandoc_missing.title": {"ru": "Pandoc не найден", "en": "Pandoc not found"},
+    "tp.pandoc_missing.text": {
+        "ru": "Для экспорта в EPUB/PDF нужен pandoc, но он не найден.\n"
+              "Обычно он ставится автоматически через pypandoc при «uv sync».\n"
+              "Если не помогло — установи pandoc вручную: https://pandoc.org/install.html",
+        "en": "EPUB/PDF export needs pandoc, but it was not found.\n"
+              "It is normally installed automatically via pypandoc on 'uv sync'.\n"
+              "If that failed, install pandoc manually: https://pandoc.org/install.html",
     },
     "tp.export_filter": {
         "ru": "Markdown files (*.md);;All files (*)",
@@ -292,6 +329,31 @@ STRINGS: dict[str, dict[str, str]] = {
         "ru": "Сессия восстановлена (книга #{book_id}, шаг {current_index})",
         "en": "Session restored (book #{book_id}, step {current_index})",
     },
+    "tp.resume_existing.title": {
+        "ru": "Найден незавершённый перевод",
+        "en": "Unfinished translation found",
+    },
+    "tp.resume_existing.text": {
+        "ru": "Уже переведено {done} из {total} страниц. Продолжить с того же места (пропустив готовые) или начать заново?",
+        "en": "{done} of {total} pages are already done. Continue from where you left off (skip finished) or start over?",
+    },
+
+    # --- Glossary ---
+    "gl.title": {"ru": "Глоссарий книги", "en": "Book glossary"},
+    "gl.term": {"ru": "Термин (оригинал)", "en": "Term (original)"},
+    "gl.translation": {"ru": "Перевод", "en": "Translation"},
+    "gl.auto_col": {"ru": "Авто", "en": "Auto"},
+    "gl.auto_yes": {"ru": "да", "en": "yes"},
+    "gl.auto_no": {"ru": "нет", "en": "no"},
+    "gl.auto": {"ru": "🔍 Авто-поиск", "en": "🔍 Auto-detect"},
+    "gl.add": {"ru": "➕ Добавить", "en": "➕ Add"},
+    "gl.delete": {"ru": "🗑️ Удалить", "en": "🗑️ Delete"},
+    "gl.close": {"ru": "Закрыть", "en": "Close"},
+    "gl.detected": {"ru": "Найдено терминов: {n}", "en": "Terms found: {n}"},
+    "gl.delete_title": {"ru": "Удалить термин", "en": "Delete term"},
+    "gl.delete_text": {"ru": "Удалить термин «{term}»?", "en": "Delete term “{term}”?"},
+    "gl.term_label": {"ru": "Термин:", "en": "Term:"},
+    "gl.translation_label": {"ru": "Перевод:", "en": "Translation:"},
 
     # --- Settings panel ---
     "sp.providers": {"ru": "Поставщики API", "en": "API providers"},
@@ -305,6 +367,20 @@ STRINGS: dict[str, dict[str, str]] = {
     "sp.top_p": {"ru": "Top-p:", "en": "Top-p:"},
     "sp.max_tokens": {"ru": "Max tokens:", "en": "Max tokens:"},
     "sp.style": {"ru": "Стиль:", "en": "Style:"},
+    "sp.chunk_size": {"ru": "Размер блока (символов):", "en": "Chunk size (chars):"},
+    "sp.chunk_size_tip": {
+        "ru": "Сколько символов исходного текста отправлять модели за один раз. "
+              "Больше — меньше запросов, но длиннее промпт.",
+        "en": "How many source characters to send to the model per request. "
+              "Larger = fewer requests but a longer prompt.",
+    },
+    "sp.context_pages": {"ru": "Страниц контекста:", "en": "Context pages:"},
+    "sp.context_pages_tip": {
+        "ru": "Сколько уже переведённых страниц подставлять в промпт как контекст. "
+              "Больше — связнее перевод, но длиннее промпт.",
+        "en": "How many already-translated pages to include as context. "
+              "More = more coherent translation but a longer prompt.",
+    },
     "sp.provider_title": {"ru": "Провайдер", "en": "Provider"},
     "sp.provider_edit_title": {
         "ru": "Редактировать провайдера",
@@ -313,13 +389,17 @@ STRINGS: dict[str, dict[str, str]] = {
     "sp.name": {"ru": "Название:", "en": "Name:"},
     "sp.base_url": {"ru": "API Base URL:", "en": "API Base URL:"},
     "sp.api_key": {"ru": "API Key:", "en": "API Key:"},
+    "sp.local_label": {"ru": "Локальный сервер:", "en": "Local server:"},
+    "sp.local_ollama": {"ru": "Ollama", "en": "Ollama"},
+    "sp.local_lmstudio": {"ru": "LM Studio", "en": "LM Studio"},
+    "sp.local_custom": {"ru": "Свой URL", "en": "Custom URL"},
     "sp.load_ollama": {
-        "ru": "📥 Загрузить модели Ollama",
-        "en": "📥 Load Ollama models",
+        "ru": "📥 Загрузить модели",
+        "en": "📥 Load models",
     },
     "sp.load_ollama_tooltip": {
-        "ru": "Получить список моделей из локального Ollama (localhost:11434)",
-        "en": "Fetch the model list from local Ollama (localhost:11434)",
+        "ru": "Получить список моделей из локального сервера (Ollama / LM Studio)",
+        "en": "Fetch the model list from the local server (Ollama / LM Studio)",
     },
     "sp.no_url": {
         "ru": "Сначала укажите API Base URL",
@@ -388,10 +468,22 @@ def tr(key: str, /, **kwargs) -> str:
 
 
 def detect_language() -> str:
-    """Detect the system UI language via ``QLocale``.
+    """Detect the system UI language.
 
-    Returns ``"en"`` for an English system locale, ``"ru"`` otherwise.
+    Checks the Qt system locale and the usual locale environment
+    variables (``LANG``/``LC_ALL``/``LANGUAGE``). Returns ``"ru"`` when the
+    system locale looks Russian, otherwise ``"en"`` (the app ships only
+    Russian and English).
     """
+    name = (QLocale.system().name() or "").lower()
+    if name.startswith("ru"):
+        return LANG_RU
+    for var in ("LANGUAGE", "LC_ALL", "LANG", "LC_MESSAGES"):
+        val = os.environ.get(var, "").lower()
+        if val:
+            primary = val.split(":")[0].split(".")[0]
+            if primary.startswith("ru"):
+                return LANG_RU
     if QLocale.system().language() == QLocale.Language.English:
         return LANG_EN
     return LANG_RU

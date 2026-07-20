@@ -5,7 +5,6 @@ from pathlib import Path
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QAction, QKeySequence, QShortcut
 from PyQt6.QtWidgets import (
-    QApplication,
     QComboBox,
     QHBoxLayout,
     QMainWindow,
@@ -50,7 +49,7 @@ class MainWindow(QMainWindow):
         self._engine = TranslatorEngine(self._cfg)
 
         # -- Panels ------------------------------------------------------
-        self._book_loader = BookLoaderWidget(self._db)
+        self._book_loader = BookLoaderWidget(self._db, self._cfg)
         self._translation_panel = TranslationPanel(self._db, self._cfg, self._engine)
         self._settings_panel = SettingsPanel(self._cfg)
 
@@ -160,7 +159,6 @@ class MainWindow(QMainWindow):
         cfg["theme"] = theme
         self._cfg.save_app_config(cfg)
         gui_theme.apply_theme(theme)
-        resolved = gui_theme.resolve_theme(theme)
         self._status.showMessage(gui_i18n.tr("topbar.theme_tooltip"))
 
     def _on_language_changed(self, label: str) -> None:
@@ -310,7 +308,7 @@ class MainWindow(QMainWindow):
             restart_btn = msg.addButton(
                 gui_i18n.tr("btn.restart"), QMessageBox.ButtonRole.YesRole
             )
-            continue_btn = msg.addButton(
+            msg.addButton(
                 gui_i18n.tr("btn.continue"), QMessageBox.ButtonRole.NoRole
             )
             cancel_btn = msg.addButton(
@@ -334,7 +332,7 @@ class MainWindow(QMainWindow):
             msg.setInformativeText(
                 gui_i18n.tr("dlg.resume.info", idx=idx, total=total)
             )
-            resume_btn = msg.addButton(
+            msg.addButton(
                 gui_i18n.tr("btn.continue"), QMessageBox.ButtonRole.YesRole
             )
             restart_btn = msg.addButton(

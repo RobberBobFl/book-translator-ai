@@ -24,6 +24,9 @@ from state.database import Database
 from utils.hash_utils import compute_file_hash
 from parsers.base import BookParser
 from parsers.txt_parser import TxtParser
+from parsers.epub_parser import EpubParser
+from parsers.fb2_parser import Fb2Parser
+from parsers.pdf_parser import PdfParser
 
 
 # ---------------------------------------------------------------------------
@@ -32,6 +35,9 @@ from parsers.txt_parser import TxtParser
 
 _PARSERS: dict[str, type[BookParser]] = {
     "txt": TxtParser,
+    "epub": EpubParser,
+    "fb2": Fb2Parser,
+    "pdf": PdfParser,
 }
 
 SUPPORTED_FORMATS = sorted(_PARSERS.keys())
@@ -57,9 +63,10 @@ class BookLoaderWidget(QWidget):
 
     book_loaded = pyqtSignal(int)
 
-    def __init__(self, database: Database, parent: QWidget | None = None) -> None:
+    def __init__(self, database: Database, config_manager=None, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._db = database
+        self._cfg = config_manager
         self._current_book: Book | None = None
 
         self._build_ui()
@@ -227,8 +234,15 @@ class BookLoaderWidget(QWidget):
             )
             return
 
+        chunk_size = 2000
+        if self._cfg is not None:
+            try:
+                chunk_size = int(self._cfg.load_app_config().get("chunk_size", 2000))
+            except Exception:
+                pass
+
         try:
-            book = parser.parse(file_path)
+            book = parser.parse(file_path, chunk_size=chunk_size)
         except Exception as exc:
             QMessageBox.critical(
                 self,

@@ -66,7 +66,7 @@ def build_system_prompt(
     parts: list[str] = [
         _STYLE_ROLE[style],
         "",
-        f"### Language direction",
+        "### Language direction",
         f"Translate from {source_language or 'the source language'} to {target_language or 'the target language'}.",
         "",
         "### Translation rules",
@@ -95,16 +95,31 @@ def build_system_prompt(
     return "\n".join(parts)
 
 
-def build_user_prompt(original_text: str, context_block: str = "") -> str:
+def build_user_prompt(
+    original_text: str, context_block: str = "", glossary_block: str = ""
+) -> str:
     """Build the user message for a single paragraph.
 
     ``context_block`` comes from ``context_builder.build_context()``.
+    ``glossary_block`` (if any) is injected as the LAST instruction, right
+    before generation. Reasoning/local models weight the most recent user
+    turn most strongly, so placing the mandatory glossary here (instead of
+    only in the system prompt) makes them honour the forced translations.
     """
     parts: list[str] = []
     if context_block:
         parts.append(context_block)
         parts.append("")
     parts.append(f"<translate>\n{original_text}\n</translate>")
+    if glossary_block:
+        parts.append("")
+        parts.append("### Glossary (MANDATORY — apply EXACTLY before answering)")
+        parts.append(
+            "Translate the text above using these exact forms for the "
+            "following terms, with no variation or transliteration:"
+        )
+        parts.append(glossary_block)
+        parts.append("Output the translation now.")
     return "\n".join(parts)
 
 
@@ -144,5 +159,10 @@ def build_messages(
                 target_language=target_language,
             ),
         },
-        {"role": "user", "content": build_user_prompt(original_text, context_block)},
+        {
+            "role": "user",
+            "content": build_user_prompt(
+                original_text, context_block, glossary_block
+            ),
+        },
     ]

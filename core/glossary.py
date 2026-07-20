@@ -32,6 +32,14 @@ _STOPWORDS: set[str] = {
     "back", "still", "even", "another", "other", "over", "under",
 }
 
+# Character classes covering Latin + Cyrillic so glossary auto-detection
+# works for both English and Russian source texts.
+_LOWER = r"a-zа-яё"
+_UPPER = r"A-ZА-ЯЁ"
+_WORD_INNER = r"A-Za-zА-Яа-яЁё"
+_WORD = r"[" + _WORD_INNER + r"]"
+_CAP_WORD = r"[" + _UPPER + r"][" + _WORD_INNER + r"]{1,}"
+
 
 class GlossaryManager:
     """High-level glossary operations backed by the Database."""
@@ -56,7 +64,12 @@ class GlossaryManager:
         if book.id is None:
             raise ValueError("Book must be saved before auto-detecting glossary")
 
-        all_paras = [p.original_text for ch in book.chapters for p in ch.paragraphs]
+        # Prefer pages (the persisted source of truth after a book is
+        # loaded from the DB); fall back to chapters/paragraphs for an
+        # in-memory Book produced by a parser.
+        all_paras = [p.original_text for p in book.pages if p.original_text]
+        if not all_paras:
+            all_paras = [p.original_text for ch in book.chapters for p in ch.paragraphs]
         corpus = "\n".join(all_paras)
 
         candidates: set[str] = set()
@@ -73,7 +86,7 @@ class GlossaryManager:
                 continue
             if term.isdigit():
                 continue
-            if not re.search(r"[a-zA-Z]", term):
+            if not re.search(_WORD, term):
                 continue
             filtered.add(term)
 
@@ -153,11 +166,11 @@ class GlossaryManager:
         candidates: set[str] = set()
 
         # Words preceded by lower-case word on same line
-        pattern = re.compile(r"\b[a-z]+[,;:]?\s+([A-Z][a-zA-Z]{1,})\b")
+        pattern = re.compile(r"\b[" + _LOWER + r"]+[,;:]?\s+(" + _CAP_WORD + r")\b")
         candidates.update(pattern.findall(corpus))
 
         # Words that appear after a backtick or inside quotes
-        pattern = re.compile(r"""["'`]([A-Z][a-zA-Z]{1,20})["'`]""")
+        pattern = re.compile(r"""["'`](""" + _CAP_WORD + r""")["'`]""")
         candidates.update(pattern.findall(corpus))
 
         return candidates
@@ -165,7 +178,7 @@ class GlossaryManager:
     @staticmethod
     def _find_all_caps(corpus: str) -> set[str]:
         """Find ALL CAPS acronyms (2+ letters)."""
-        pattern = re.compile(r"\b([A-Z]{2,})\b")
+        pattern = re.compile(r"\b([" + _UPPER + r"]{2,})\b")
         return set(pattern.findall(corpus))
 
     @staticmethod
@@ -173,7 +186,7 @@ class GlossaryManager:
         """Find words that appear more than 3 times across paragraphs."""
         counter: Counter[str] = Counter()
         for para in all_paragraphs:
-            words = re.findall(r"[A-Za-z\u00C0-\u024F]+(?:['\u2019][A-Za-z]+)?", para)
+            words = re.findall(_WORD + r"+(?:['’]" + _WORD + r"+)?", para)
             for w in words:
                 title = w[0].isupper()
                 if title:

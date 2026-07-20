@@ -40,6 +40,8 @@ class TranslationWorker(QObject):
     needs_review = pyqtSignal(int, str, str)
     # Critical error that stopped translation
     error_occurred = pyqtSignal(str)
+    # Translation auto-paused after a page failed (so the user can fix config)
+    paused = pyqtSignal()
 
     def __init__(
         self,
@@ -104,7 +106,13 @@ class TranslationWorker(QObject):
         if self._review_future is not None and not self._review_future.done():
             self._review_future.set_result(None)
 
-    async def translate_page(self, idx: int) -> None:
+    async def retranslate_page(self, idx: int) -> None:
+        """Re-translate a single page on demand (interactive review button).
+
+        Used by the editor's "translate" button. Updates the page, saves it,
+        and re-emits ``needs_review`` so the editor refreshes with the new
+        translation.
+        """
         if not (0 <= idx < len(self._pages)):
             return
         page = self._pages[idx]
@@ -120,7 +128,7 @@ class TranslationWorker(QObject):
             except Exception:
                 logger.exception("Failed to build glossary block")
 
-        context = build_context(self._pages, idx, n=2)
+        context = build_context(self._pages, idx, n=self._job.context_pages)
 
         messages = build_messages(
             original_text=page.original_text,
@@ -131,7 +139,7 @@ class TranslationWorker(QObject):
             target_language=self._job.target_language,
         )
         logger.debug(
-            f"translate_page[{idx}] system prompt: {messages[0]['content'][:200]}"
+            f"retranslate_page[{idx}] system prompt: {messages[0]['content'][:200]}"
         )
 
         result = await self._engine.translate(
@@ -152,7 +160,7 @@ class TranslationWorker(QObject):
 
         page.status = "completed"
         self._db.save_page(page)
-        logger.info(f"Page {idx} translated: {result.tokens_in} in / {result.tokens_out} out / ${result.cost_usd}")
+        logger.info(f"Page {idx} re-translated: {result.tokens_in} in / {result.tokens_out} out / ${result.cost_usd}")
 
         self._total_tokens_in += result.tokens_in
         self._total_tokens_out += result.tokens_out
@@ -160,7 +168,10 @@ class TranslationWorker(QObject):
 
         self.page_done.emit(idx, page.id)
         self.progress_changed.emit(idx + 1, len(self._pages))
-        self.interim_cost.emit(self._total_tokens_in, self._total_tokens_out, self._total_cost)
+        self.interim_cost.emit(self._total_tokens_in, self._total_tokens_out, float(self._total_cost))
+
+        # Show the new translation for review again.
+        self.needs_review.emit(idx, page.original_text, page.translated_text or "")
 
     # ------------------------------------------------------------------
     # Main loop (while-loop for back navigation)
@@ -197,6 +208,11 @@ class TranslationWorker(QObject):
                 self._db.save_page(page)
                 self.page_failed.emit(idx, str(exc))
                 self._save_session(idx + 1)
+                # Pause so we don't burn through every remaining page with the
+                # same (usually config-related) error. The user can fix the
+                # provider/model and resume.
+                self.pause()
+                self.paused.emit()
             except Exception as exc:
                 logger.exception(f"Unexpected error on page {idx}")
                 page.status = "failed"
@@ -204,6 +220,8 @@ class TranslationWorker(QObject):
                 self._db.save_page(page)
                 self.page_failed.emit(idx, str(exc))
                 self._save_session(idx + 1)
+                self.pause()
+                self.paused.emit()
 
             if self._back_requested:
                 self._back_requested = False
@@ -237,7 +255,7 @@ class TranslationWorker(QObject):
                 except Exception:
                     logger.exception("Failed to build glossary block")
 
-            context = build_context(self._pages, idx, n=2)
+            context = build_context(self._pages, idx, n=self._job.context_pages)
 
             messages = build_messages(
                 original_text=page.original_text,

@@ -93,10 +93,34 @@ class PageEditor(QWidget):
     # ------------------------------------------------------------------
 
     def set_content(self, original: str, translation: str, review_idx: int | None = None) -> None:
+        self._set_review_controls_visible(True)
         self._orig_text.setPlainText(original)
         self._trans_text.setPlainText(translation)
         self._trans_text.setFocus()
         self._current_review_idx = review_idx
+
+    def set_preview(self, original: str) -> None:
+        """Show a read-only original page (book preview, no active translation)."""
+        self._set_review_controls_visible(False)
+        self._orig_text.setPlainText(original)
+        self._current_review_idx = None
+
+    def _set_review_controls_visible(self, visible: bool) -> None:
+        """Toggle the translation editor + action buttons (used for preview)."""
+        self._trans_label.setVisible(visible)
+        self._trans_text.setVisible(visible)
+        for btn in (
+            self._back_btn,
+            self._skip_btn,
+            self._rephrase_btn,
+            self._translate_btn,
+            self._next_btn,
+            self._accept_btn,
+            self._reject_btn,
+        ):
+            btn.setVisible(visible)
+        # Give the read-only original more room when previewing.
+        self._orig_text.setMaximumHeight(180 if visible else 16777215)
 
     @property
     def current_review_idx(self) -> int | None:

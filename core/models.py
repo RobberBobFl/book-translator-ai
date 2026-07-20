@@ -128,6 +128,7 @@ class TranslationJob(BaseModel):
     style: Literal["дословный", "литературный", "адаптированный"] = "литературный"
     mode: Literal["auto", "interactive", "hybrid"] = "auto"
     target_language: str = "русский"
+    context_pages: int = 2
 
 
 class TranslationResult(BaseModel):

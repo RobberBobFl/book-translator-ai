@@ -104,10 +104,27 @@ class Database:
         if row is None:
             return None
         translations = self.list_translations(book_id)
-        page_rows = conn.execute(
-            "SELECT * FROM pages WHERE book_id=? ORDER BY chapter_title, page_number",
-            (book_id,),
-        ).fetchall()
+        # Original pages belong to the book's first ("raw") translation, NOT to
+        # every translation created later. Loading *all* pages made each new
+        # translation treat previous translations' pages as "original" and
+        # duplicate them on every start.
+        raw_t = next((t for t in translations if t.name == "raw"), None)
+        raw_id = (
+            raw_t.id
+            if raw_t is not None
+            else (min((t.id for t in translations), default=None) if translations else None)
+        )
+        if raw_id is not None:
+            page_rows = conn.execute(
+                "SELECT * FROM pages WHERE book_id=? AND translation_id=? "
+                "ORDER BY chapter_title, page_number",
+                (book_id, raw_id),
+            ).fetchall()
+        else:
+            page_rows = conn.execute(
+                "SELECT * FROM pages WHERE book_id=? ORDER BY chapter_title, page_number",
+                (book_id,),
+            ).fetchall()
         book_pages = [self._row_to_page(p) for p in page_rows]
         # Build chapters from pages (group by chapter_title)
         chapters: dict[str, list[str]] = {}

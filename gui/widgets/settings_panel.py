@@ -119,14 +119,28 @@ class SettingsPanel(QWidget):
         self._style_combo.addItems(_STYLE_OPTIONS)
         self._style_combo.currentTextChanged.connect(self._on_setting_changed)
 
+        self._chunk_spin = QSpinBox()
+        self._chunk_spin.setRange(200, 8000)
+        self._chunk_spin.setSingleStep(100)
+        self._chunk_spin.valueChanged.connect(self._on_setting_changed)
+
+        self._ctx_spin = QSpinBox()
+        self._ctx_spin.setRange(0, 10)
+        self._ctx_spin.setSingleStep(1)
+        self._ctx_spin.valueChanged.connect(self._on_setting_changed)
+
         self._temp_lbl = QLabel()
         self._top_p_lbl = QLabel()
         self._max_tokens_lbl = QLabel()
         self._style_lbl = QLabel()
+        self._chunk_lbl = QLabel()
+        self._ctx_lbl = QLabel()
         param_layout.addRow(self._temp_lbl, self._temp_spin)
         param_layout.addRow(self._top_p_lbl, self._top_p_spin)
         param_layout.addRow(self._max_tokens_lbl, self._max_tokens_spin)
         param_layout.addRow(self._style_lbl, self._style_combo)
+        param_layout.addRow(self._chunk_lbl, self._chunk_spin)
+        param_layout.addRow(self._ctx_lbl, self._ctx_spin)
 
         outer.addWidget(self._param_group)
         outer.addStretch()
@@ -148,6 +162,8 @@ class SettingsPanel(QWidget):
         self._top_p_spin.setValue(float(cfg.get("top_p", 0.9)))
         self._max_tokens_spin.setValue(int(cfg.get("max_tokens", 4096)))
         self._style_combo.setCurrentText(cfg.get("style", "литературный"))
+        self._chunk_spin.setValue(int(cfg.get("chunk_size", 2000)))
+        self._ctx_spin.setValue(int(cfg.get("context_pages", 2)))
 
         # Model combo
         self._populate_model_combos()
@@ -163,6 +179,8 @@ class SettingsPanel(QWidget):
         cfg["top_p"] = self._top_p_spin.value()
         cfg["max_tokens"] = self._max_tokens_spin.value()
         cfg["style"] = self._style_combo.currentText()
+        cfg["chunk_size"] = self._chunk_spin.value()
+        cfg["context_pages"] = self._ctx_spin.value()
         cfg["last_model"] = self._model_combo.currentText().strip()
         # Normalise model name if it lacks a provider prefix
         val = cfg.get("last_model", "")
@@ -312,6 +330,10 @@ class SettingsPanel(QWidget):
         self._top_p_lbl.setText(gui_i18n.tr("sp.top_p"))
         self._max_tokens_lbl.setText(gui_i18n.tr("sp.max_tokens"))
         self._style_lbl.setText(gui_i18n.tr("sp.style"))
+        self._chunk_lbl.setText(gui_i18n.tr("sp.chunk_size"))
+        self._chunk_spin.setToolTip(gui_i18n.tr("sp.chunk_size_tip"))
+        self._ctx_lbl.setText(gui_i18n.tr("sp.context_pages"))
+        self._ctx_spin.setToolTip(gui_i18n.tr("sp.context_pages_tip"))
 
 
 # ======================================================================
@@ -363,16 +385,25 @@ class _ProviderDialog(QDialog):
         self._url_lbl = QLabel()
         self._key_lbl = QLabel()
         form.addRow(self._name_lbl, self._name_edit)
+
+        self._local_lbl = QLabel()
+        self._local_combo = QComboBox()
+        self._local_combo.addItem(gui_i18n.tr("sp.local_ollama"), "ollama")
+        self._local_combo.addItem(gui_i18n.tr("sp.local_lmstudio"), "lmstudio")
+        self._local_combo.addItem(gui_i18n.tr("sp.local_custom"), "custom")
+        self._local_combo.currentTextChanged.connect(self._on_local_changed)
+        form.addRow(self._local_lbl, self._local_combo)
+
         form.addRow(self._url_lbl, self._url_edit)
         form.addRow(self._key_lbl, self._key_edit)
 
-        # Ollama-specific button
+        # Local-server model loader (Ollama / LM Studio)
         btn_row = QHBoxLayout()
-        self._load_ollama_btn = QPushButton()
-        self._load_ollama_btn.setToolTip(" ")
-        self._load_ollama_btn.clicked.connect(self._on_load_ollama_models)
-        self._load_ollama_btn.setVisible(False)  # Show only for Ollama URLs
-        btn_row.addWidget(self._load_ollama_btn)
+        self._load_models_btn = QPushButton()
+        self._load_models_btn.setToolTip(" ")
+        self._load_models_btn.clicked.connect(self._on_load_local_models)
+        self._load_models_btn.setVisible(False)
+        btn_row.addWidget(self._load_models_btn)
         btn_row.addStretch()
         form.addRow("", btn_row)
 
@@ -398,8 +429,9 @@ class _ProviderDialog(QDialog):
         self._name_lbl.setText(gui_i18n.tr("sp.name"))
         self._url_lbl.setText(gui_i18n.tr("sp.base_url"))
         self._key_lbl.setText(gui_i18n.tr("sp.api_key"))
-        self._load_ollama_btn.setText(gui_i18n.tr("sp.load_ollama"))
-        self._load_ollama_btn.setToolTip(gui_i18n.tr("sp.load_ollama_tooltip"))
+        self._local_lbl.setText(gui_i18n.tr("sp.local_label"))
+        self._load_models_btn.setText(gui_i18n.tr("sp.load_ollama"))
+        self._load_models_btn.setToolTip(gui_i18n.tr("sp.load_ollama_tooltip"))
         self._ok_btn.setText(gui_i18n.tr("sp.ok"))
         self._cancel_btn.setText(gui_i18n.tr("sp.cancel"))
 
@@ -421,44 +453,58 @@ class _ProviderDialog(QDialog):
     # Ollama-specific model loading
     # ------------------------------------------------------------------
 
+    def _on_local_changed(self, _text: str) -> None:
+        """Pick a local preset → fill the matching base URL."""
+        key = self._local_combo.currentData()
+        if key == "ollama":
+            self._url_edit.setText("http://localhost:11434")
+        elif key == "lmstudio":
+            self._url_edit.setText("http://127.0.0.1:1234")
+        # custom: leave the URL as the user typed it
+
     def _on_url_changed(self, text: str) -> None:
-        """Show/hide Ollama load button and auto-fill name."""
+        """Show/hide the local model loader and keep the preset in sync."""
         url = text.strip().lower()
         is_ollama = "localhost:11434" in url or "127.0.0.1:11434" in url
-        self._load_ollama_btn.setVisible(is_ollama)
-        if is_ollama and self._provider is None and not self._name_edit.text().strip():
-            self._name_edit.setText("ollama")
+        is_lmstudio = "1234" in url and ("lmstudio" in url or "127.0.0.1" in url)
+        is_local = is_ollama or is_lmstudio
 
-    def _on_load_ollama_models(self) -> None:
-        """Fetch models from local Ollama instance."""
+        self._load_models_btn.setVisible(is_local)
+
+        # Reflect the URL in the preset combo (without looping back).
+        self._local_combo.blockSignals(True)
+        if is_ollama:
+            self._local_combo.setCurrentIndex(self._local_combo.findData("ollama"))
+        elif is_lmstudio:
+            self._local_combo.setCurrentIndex(self._local_combo.findData("lmstudio"))
+        else:
+            self._local_combo.setCurrentIndex(self._local_combo.findData("custom"))
+        self._local_combo.blockSignals(False)
+
+        if self._provider is None and not self._name_edit.text().strip():
+            if is_ollama:
+                self._name_edit.setText("ollama")
+
+    def _on_load_local_models(self) -> None:
+        """Fetch models from the local server (Ollama / LM Studio)."""
         url = self._url_edit.text().strip().rstrip("/")
         if not url:
             QMessageBox.warning(self, gui_i18n.tr("sp.ollama_error_title"),
                                 gui_i18n.tr("sp.no_url"))
             return
 
-        base_url = url
-        if base_url.endswith("/v1"):
-            base_url = base_url[:-3]
+        base_url = url[:-3] if url.endswith("/v1") else url
+        key = self._local_combo.currentData()
+        is_lmstudio = key == "lmstudio" or (
+            "1234" in base_url and ("lmstudio" in base_url or "127.0.0.1" in base_url)
+        )
 
         try:
-            import json
-            import urllib.request
-
-            req = urllib.request.Request(f"{base_url}/api/tags")
-            req.add_header("User-Agent", "book-translator/0.1")
-
-            with urllib.request.urlopen(req, timeout=10) as resp:
-                if resp.status != 200:
-                    raise Exception(f"HTTP {resp.status}: {resp.read().decode()}")
-                data = json.loads(resp.read().decode())
-
-            models = []
-            for m in data.get("models", []):
-                name = m.get("name") or m.get("model")
-                if name:
-                    name = name.replace(":latest", "")
-                    models.append(name)
+            models = (
+                self._fetch_openai_models(base_url)
+                if is_lmstudio
+                else self._fetch_ollama_models(base_url)
+            )
 
             if not models:
                 QMessageBox.information(
@@ -478,9 +524,7 @@ class _ProviderDialog(QDialog):
 
             if ok and model:
                 self._loaded_models = {
-                    model: ModelPricing(
-                        input_cost_per_1k=0, output_cost_per_1k=0
-                    )
+                    model: ModelPricing(input_cost_per_1k=0, output_cost_per_1k=0)
                 }
                 QMessageBox.information(
                     self,
@@ -494,6 +538,37 @@ class _ProviderDialog(QDialog):
                 gui_i18n.tr("sp.ollama_error_title"),
                 gui_i18n.tr("sp.ollama_error_text", exc=exc, base_url=base_url),
             )
+
+    @staticmethod
+    def _fetch_ollama_models(base_url: str) -> list[str]:
+        import json
+        import urllib.request
+
+        req = urllib.request.Request(f"{base_url}/api/tags")
+        req.add_header("User-Agent", "book-translator/0.1")
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            if resp.status != 200:
+                raise Exception(f"HTTP {resp.status}: {resp.read().decode()}")
+            data = json.loads(resp.read().decode())
+        models = []
+        for m in data.get("models", []):
+            name = m.get("name") or m.get("model")
+            if name:
+                models.append(name.replace(":latest", ""))
+        return models
+
+    @staticmethod
+    def _fetch_openai_models(base_url: str) -> list[str]:
+        import json
+        import urllib.request
+
+        req = urllib.request.Request(f"{base_url}/v1/models")
+        req.add_header("User-Agent", "book-translator/0.1")
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            if resp.status != 200:
+                raise Exception(f"HTTP {resp.status}: {resp.read().decode()}")
+            data = json.loads(resp.read().decode())
+        return [m.get("id") for m in data.get("data", []) if m.get("id")]
 
     # ------------------------------------------------------------------
     # Validation & result

@@ -1,13 +1,16 @@
 """Translation panel — mode selection, progress, log, problem tracking."""
 
 import asyncio
+import tempfile
 from datetime import datetime
 from decimal import Decimal
+from pathlib import Path
 
 from loguru import logger
 from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QColor, QShortcut, QKeySequence
+from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QFileDialog,
     QHBoxLayout,
@@ -23,7 +26,12 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from exporters.markdown_exporter import check_translation_complete, export_to_markdown
+from exporters.markdown_exporter import (
+    check_translation_complete,
+    convert_with_pandoc,
+    export_to_markdown,
+    pandoc_available,
+)
 
 from core.config import ConfigManager
 from core.glossary import GlossaryManager
@@ -124,9 +132,25 @@ class TranslationPanel(QWidget):
         self._resume_btn.hide()
         self._stop_btn = QPushButton(gui_i18n.tr("tp.stop"))
         self._stop_btn.clicked.connect(self._on_stop)
+
+        self._glossary_btn = QPushButton(gui_i18n.tr("tp.glossary"))
+        self._glossary_btn.clicked.connect(self._on_open_glossary)
+        self._glossary_btn.setEnabled(False)
+
         self._export_btn = QPushButton(gui_i18n.tr("tp.export"))
         self._export_btn.clicked.connect(self._on_export_clicked)
         self._export_btn.setEnabled(False)
+
+        self._format_lbl = QLabel(gui_i18n.tr("tp.format"))
+        self._format_combo = QComboBox()
+        self._format_combo.addItem(gui_i18n.tr("tp.fmt_markdown"), "md")
+        self._format_combo.addItem(gui_i18n.tr("tp.fmt_epub"), "epub")
+        self._format_combo.addItem(gui_i18n.tr("tp.fmt_pdf"), "pdf")
+        self._format_combo.setToolTip(gui_i18n.tr("tp.format_tooltip"))
+
+        self._only_translation_chk = QCheckBox(gui_i18n.tr("tp.only_translation"))
+        self._only_translation_chk.setToolTip(gui_i18n.tr("tp.only_translation_tooltip"))
+        self._only_translation_chk.setChecked(False)
 
         self._mode_lbl = QLabel(gui_i18n.tr("tp.mode"))
         ctrl_row.addWidget(self._mode_lbl)
@@ -142,8 +166,14 @@ class TranslationPanel(QWidget):
         ctrl_row.addWidget(self._pause_btn)
         ctrl_row.addWidget(self._resume_btn)
         ctrl_row.addWidget(self._stop_btn)
+        ctrl_row.addWidget(self._glossary_btn)
         ctrl_row.addSpacing(20)
         ctrl_row.addWidget(self._export_btn)
+        ctrl_row.addSpacing(10)
+        ctrl_row.addWidget(self._format_lbl)
+        ctrl_row.addWidget(self._format_combo)
+        ctrl_row.addSpacing(10)
+        ctrl_row.addWidget(self._only_translation_chk)
         ctrl_row.addStretch()
         top_layout.addLayout(ctrl_row)
 
@@ -241,6 +271,30 @@ class TranslationPanel(QWidget):
         self._translation_id = None
         self._start_btn.setEnabled(book_id is not None)
         self._export_btn.setEnabled(book_id is not None)
+        self._glossary_btn.setEnabled(book_id is not None)
+        if book_id is not None:
+            self._load_preview(book_id)
+        else:
+            self._side_list.clear()
+            self._side_items.clear()
+            self._editor.hide()
+
+    def _load_preview(self, book_id: int) -> None:
+        """Show the book's original text immediately, before translation."""
+        book = self._db.load_book(book_id)
+        if book is None or not book.pages:
+            return
+        self._pages = list(book.pages)
+        self._side_list.clear()
+        self._side_items.clear()
+        for idx, p in enumerate(self._pages):
+            item = self._make_side_item(idx, p)
+            self._side_list.addItem(item)
+            self._side_items[idx] = item
+        # Show the first page so the user sees text right away.
+        first = self._pages[0]
+        self._editor.set_preview(first.original_text)
+        self._editor.show()
 
     def refresh_models(self) -> None:
         """Called when providers change — updates the read-only model label."""
@@ -269,14 +323,26 @@ class TranslationPanel(QWidget):
             )
             return
 
+        fmt = self._format_combo.currentData() or "md"
+        include_original = not self._only_translation_chk.isChecked()
+        if fmt == "md":
+            default_name, file_filter = "translation.md", gui_i18n.tr("tp.export_filter_md")
+        elif fmt == "epub":
+            default_name, file_filter = "translation.epub", gui_i18n.tr("tp.export_filter_epub")
+        else:  # pdf
+            default_name, file_filter = "translation.pdf", gui_i18n.tr("tp.export_filter_pdf")
+
         file_path, _ = QFileDialog.getSaveFileName(
             self,
             gui_i18n.tr("tp.export_title"),
-            "translation.md",
-            gui_i18n.tr("tp.export_filter"),
+            default_name,
+            file_filter,
         )
         if not file_path:
             return
+
+        # Normalise the extension to the chosen format.
+        file_path = str(Path(file_path).with_suffix(f".{fmt}"))
 
         if not check_translation_complete(self._db, self._translation_id):
             reply = QMessageBox.question(
@@ -289,14 +355,46 @@ class TranslationPanel(QWidget):
             if reply != QMessageBox.StandardButton.Yes:
                 return
 
-        try:
-            result = export_to_markdown(
-                db=self._db,
-                book_id=self._book_id,
-                translation_id=self._translation_id,
-                output_path=file_path,
-                include_original=True,
+        # EPUB/PDF need pandoc; Markdown is written directly.
+        if fmt in ("epub", "pdf") and not pandoc_available():
+            QMessageBox.critical(
+                self,
+                gui_i18n.tr("tp.pandoc_missing.title"),
+                gui_i18n.tr("tp.pandoc_missing.text"),
             )
+            return
+
+        try:
+            if fmt == "md":
+                result = export_to_markdown(
+                    db=self._db,
+                    book_id=self._book_id,
+                    translation_id=self._translation_id,
+                    output_path=file_path,
+                    include_original=include_original,
+                )
+            else:
+                # Render Markdown to a temp file, then convert via pandoc.
+                book = self._db.load_book(self._book_id)
+                title = book.title if book is not None else ""
+                with tempfile.NamedTemporaryFile(
+                    "w", suffix=".md", delete=False, encoding="utf-8"
+                ) as tf:
+                    md_path = tf.name
+                try:
+                    export_to_markdown(
+                        db=self._db,
+                        book_id=self._book_id,
+                        translation_id=self._translation_id,
+                        output_path=md_path,
+                        include_original=include_original,
+                    )
+                    result = convert_with_pandoc(
+                        md_path, output_format=fmt, title=title, output_path=file_path
+                    )
+                finally:
+                    Path(md_path).unlink(missing_ok=True)
+
             QMessageBox.information(
                 self, gui_i18n.tr("tp.export"), gui_i18n.tr("tp.export_done", result=result)
             )
@@ -322,6 +420,7 @@ class TranslationPanel(QWidget):
             style=cfg.get("style", "литературный"),
             mode=mode,
             target_language=self._lang_combo.currentText() or "русский",
+            context_pages=int(cfg.get("context_pages", 2)),
         )
 
     def _on_start(self) -> None:
@@ -336,8 +435,6 @@ class TranslationPanel(QWidget):
         if book is None:
             self.log(gui_i18n.tr("tp.err_book_not_found"))
             return
-
-        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
         job = self._build_job(cfg, mode)
         if not job.model_id:
@@ -354,19 +451,59 @@ class TranslationPanel(QWidget):
             )
             return
 
-        trans = self._db.create_translation(
-            book_id=self._book_id,
-            name=f"{mode} — {job.model_id} — {ts}",
-            model_id=job.model_id,
-            source_type="parallel",
-            mode=mode,
-        )
+        # --- choose translation: continue existing progress or start fresh ---
+        existing = [
+            t for t in self._db.list_translations(self._book_id)
+            if self._db.count_completed_pages(t.id) > 0
+        ]
+        use_existing = False
+        if existing:
+            done = self._db.count_completed_pages(existing[0].id)
+            total = len(book.pages)
+            reply = QMessageBox.question(
+                self,
+                gui_i18n.tr("tp.resume_existing.title"),
+                gui_i18n.tr("tp.resume_existing.text", done=done, total=total),
+                QMessageBox.StandardButton.Yes
+                | QMessageBox.StandardButton.No
+                | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Yes,
+            )
+            if reply == QMessageBox.StandardButton.Cancel:
+                return
+            use_existing = reply == QMessageBox.StandardButton.Yes
+
+        if use_existing:
+            trans = existing[0]
+            pages = self._db.get_pages(trans.id)
+            # Reorder to match the book's page order for consistent indexing.
+            by_key = {(p.chapter_title, p.page_number): p for p in pages}
+            ordered: list[Page] = []
+            for bp in book.pages:
+                ordered.append(by_key.get((bp.chapter_title, bp.page_number), bp))
+            pages = ordered
+            start_index = next(
+                (i for i, p in enumerate(pages) if p.status != "completed"),
+                len(pages),
+            )
+        else:
+            ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            trans = self._db.create_translation(
+                book_id=self._book_id,
+                name=f"{mode} — {job.model_id} — {ts}",
+                model_id=job.model_id,
+                source_type="parallel",
+                mode=mode,
+            )
+            pages = self._create_pages_for_translation(book, trans.id)
+            start_index = 0
+
         self._translation_id = trans.id
-        self._pages = self._create_pages_for_translation(book, trans.id)
+        self._pages = pages
 
         # Setup progress
         self._progress_bar.setMaximum(len(self._pages))
-        self._progress_bar.setValue(0)
+        self._progress_bar.setValue(start_index)
 
         # Clear state
         self._problem_list.clear()
@@ -389,7 +526,7 @@ class TranslationPanel(QWidget):
             translation_id=trans.id,
             job=job,
             pages=self._pages,
-            current_index=0,
+            current_index=start_index,
             glossary_mgr=self._glossary_mgr,
         )
         worker.progress_changed.connect(self._on_progress)
@@ -398,6 +535,7 @@ class TranslationPanel(QWidget):
         worker.page_failed.connect(self._on_page_failed)
         worker.needs_review.connect(self._on_needs_review)
         worker.error_occurred.connect(self._on_error_occurred)
+        worker.paused.connect(self._on_pause)
         worker.interim_cost.connect(self._update_cost)
 
         loop = asyncio.get_event_loop()
@@ -414,7 +552,7 @@ class TranslationPanel(QWidget):
             book_id=self._book_id,
             mode=mode,
             translation_a_id=trans.id,
-            current_page_index=0,
+            current_page_index=start_index,
         )
 
     def _create_pages_for_translation(
@@ -452,6 +590,13 @@ class TranslationPanel(QWidget):
         self._pause_btn.show()
         self.log(gui_i18n.tr("tp.resumed"))
 
+    def _on_open_glossary(self) -> None:
+        if self._book_id is None:
+            return
+        from gui.widgets.glossary_dialog import GlossaryDialog
+        dlg = GlossaryDialog(self._db, self._book_id, self)
+        dlg.exec()
+
     def _on_stop(self) -> None:
         if self._worker:
             self._worker.stop()
@@ -478,7 +623,15 @@ class TranslationPanel(QWidget):
         self._pause_btn.setText(gui_i18n.tr("tp.pause"))
         self._resume_btn.setText(gui_i18n.tr("tp.resume"))
         self._stop_btn.setText(gui_i18n.tr("tp.stop"))
+        self._glossary_btn.setText(gui_i18n.tr("tp.glossary"))
         self._export_btn.setText(gui_i18n.tr("tp.export"))
+        self._format_lbl.setText(gui_i18n.tr("tp.format"))
+        self._format_combo.setItemText(0, gui_i18n.tr("tp.fmt_markdown"))
+        self._format_combo.setItemText(1, gui_i18n.tr("tp.fmt_epub"))
+        self._format_combo.setItemText(2, gui_i18n.tr("tp.fmt_pdf"))
+        self._format_combo.setToolTip(gui_i18n.tr("tp.format_tooltip"))
+        self._only_translation_chk.setText(gui_i18n.tr("tp.only_translation"))
+        self._only_translation_chk.setToolTip(gui_i18n.tr("tp.only_translation_tooltip"))
         self._progress_bar.setFormat(gui_i18n.tr("tp.progress"))
         self._log_label.setText(gui_i18n.tr("tp.log_label"))
         self._problem_label.setText(gui_i18n.tr("tp.problem_pages"))
@@ -587,11 +740,13 @@ class TranslationPanel(QWidget):
 
     def _on_review_translate(self) -> None:
         idx = self._editor.current_review_idx
-        if idx is not None and idx >= 0 and idx < len(self._pages):
-            if self._worker:
-                self._worker.translate_page(idx)
-        self._editor.hide()
-        self._current_review_idx = None
+        if idx is None or not (0 <= idx < len(self._pages)):
+            return
+        if self._worker:
+            loop = asyncio.get_event_loop()
+            loop.create_task(self._worker.retranslate_page(idx))
+        # Keep the editor open: retranslate_page re-emits needs_review,
+        # which refreshes its content with the new translation.
 
     # ------------------------------------------------------------------
     # Side panel
@@ -604,8 +759,12 @@ class TranslationPanel(QWidget):
         if idx < 0 or idx >= len(self._pages):
             return
         page = self._pages[idx]
-        self._editor.set_content(page.original_text, page.translated_text or "", idx)
         self._current_review_idx = idx
+        if self._translation_id is None:
+            # Preview mode: show the original read-only.
+            self._editor.set_preview(page.original_text)
+        else:
+            self._editor.set_content(page.original_text, page.translated_text or "", idx)
         self._editor.show()
 
     def _make_side_item(self, idx: int, page: Page) -> QListWidgetItem:
