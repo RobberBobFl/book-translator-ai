@@ -15,6 +15,7 @@ from PyQt6.QtWidgets import (
     QFileDialog,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QListWidget,
     QListWidgetItem,
     QMessageBox,
@@ -22,6 +23,7 @@ from PyQt6.QtWidgets import (
     QProgressBar,
     QPushButton,
     QSplitter,
+    QTextEdit,
     QVBoxLayout,
     QWidget,
 )
@@ -656,6 +658,11 @@ class TranslationPanel(QWidget):
     # ------------------------------------------------------------------
 
     def toggle_pause(self) -> None:
+        # Ignore Space while typing in a text field, so it neither pauses
+        # the run nor inserts a stray space into the editor.
+        fw = self.focusWidget()
+        if isinstance(fw, (QLineEdit, QTextEdit, QPlainTextEdit)):
+            return
         if self._resume_btn.isVisible():
             self._on_resume()
         elif self._pause_btn.isVisible():

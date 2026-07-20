@@ -285,26 +285,34 @@ class TranslationWorker(QObject):
             page.retry_count = 0
             page.error_message = None
 
-            # --- interactive / hybrid review ---
-            if self._job.mode in ("interactive", "hybrid"):
+            # --- review, depending on mode ---
+            if self._job.mode == "interactive":
+                # Translate one page, then pause for the user to review/edit
+                # before moving on (full manual stepping).
                 edited = await self._wait_for_review(idx, page)
                 if edited is None:
                     if self._rephrase_requested:
                         continue  # re-translate
                     break  # keep model translation, move on
                 elif edited != page.translated_text:
-                    old = page.translated_text or ""
-                    page.translated_text = edited
-                    page.is_manually_edited = True
-                    from core.models import EditRecord
-                    from datetime import datetime
-                    page.edit_history.append(
-                        EditRecord(
-                            timestamp=datetime.now().isoformat(timespec="seconds"),
-                            old_text=old,
-                            new_text=edited,
-                        )
-                    )
+                    self._apply_edit(page, edited)
+                break
+            elif self._job.mode == "hybrid":
+                # Auto-translate within a chapter, but pause for review at
+                # chapter boundaries (the last page of each chapter) so the
+                # user can verify a chapter before the next one starts.
+                is_boundary = (
+                    idx + 1 >= total
+                    or self._pages[idx + 1].chapter_title != page.chapter_title
+                )
+                if is_boundary:
+                    edited = await self._wait_for_review(idx, page)
+                    if edited is None:
+                        if self._rephrase_requested:
+                            continue  # re-translate
+                        break  # keep model translation, move on
+                    elif edited != page.translated_text:
+                        self._apply_edit(page, edited)
                 break
             else:
                 break  # auto mode — no review
@@ -330,6 +338,21 @@ class TranslationWorker(QObject):
     # ------------------------------------------------------------------
     # Interactive review
     # ------------------------------------------------------------------
+
+    def _apply_edit(self, page: Page, edited: str) -> None:
+        """Record a manual edit to a translated page."""
+        old = page.translated_text or ""
+        page.translated_text = edited
+        page.is_manually_edited = True
+        from core.models import EditRecord
+        from datetime import datetime
+        page.edit_history.append(
+            EditRecord(
+                timestamp=datetime.now().isoformat(timespec="seconds"),
+                old_text=old,
+                new_text=edited,
+            )
+        )
 
     async def _wait_for_review(
         self, idx: int, page: Page
