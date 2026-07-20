@@ -29,6 +29,7 @@ from PyQt6.QtWidgets import (
 from exporters.markdown_exporter import (
     check_translation_complete,
     convert_with_pandoc,
+    export_to_fb2,
     export_to_markdown,
     pandoc_available,
 )
@@ -146,6 +147,7 @@ class TranslationPanel(QWidget):
         self._format_combo.addItem(gui_i18n.tr("tp.fmt_markdown"), "md")
         self._format_combo.addItem(gui_i18n.tr("tp.fmt_epub"), "epub")
         self._format_combo.addItem(gui_i18n.tr("tp.fmt_pdf"), "pdf")
+        self._format_combo.addItem(gui_i18n.tr("tp.fmt_fb2"), "fb2")
         self._format_combo.setToolTip(gui_i18n.tr("tp.format_tooltip"))
 
         self._only_translation_chk = QCheckBox(gui_i18n.tr("tp.only_translation"))
@@ -331,6 +333,8 @@ class TranslationPanel(QWidget):
             default_name, file_filter = "translation.epub", gui_i18n.tr("tp.export_filter_epub")
         else:  # pdf
             default_name, file_filter = "translation.pdf", gui_i18n.tr("tp.export_filter_pdf")
+        if fmt == "fb2":
+            default_name, file_filter = "translation.fb2", gui_i18n.tr("tp.export_filter_fb2")
 
         file_path, _ = QFileDialog.getSaveFileName(
             self,
@@ -373,7 +377,7 @@ class TranslationPanel(QWidget):
                     output_path=file_path,
                     include_original=include_original,
                 )
-            else:
+            elif fmt in ("epub", "pdf"):
                 # Render Markdown to a temp file, then convert via pandoc.
                 book = self._db.load_book(self._book_id)
                 title = book.title if book is not None else ""
@@ -394,6 +398,14 @@ class TranslationPanel(QWidget):
                     )
                 finally:
                     Path(md_path).unlink(missing_ok=True)
+            elif fmt == "fb2":
+                result = export_to_fb2(
+                    db=self._db,
+                    book_id=self._book_id,
+                    translation_id=self._translation_id,
+                    output_path=file_path,
+                    include_original=include_original,
+                )
 
             QMessageBox.information(
                 self, gui_i18n.tr("tp.export"), gui_i18n.tr("tp.export_done", result=result)
@@ -629,6 +641,7 @@ class TranslationPanel(QWidget):
         self._format_combo.setItemText(0, gui_i18n.tr("tp.fmt_markdown"))
         self._format_combo.setItemText(1, gui_i18n.tr("tp.fmt_epub"))
         self._format_combo.setItemText(2, gui_i18n.tr("tp.fmt_pdf"))
+        self._format_combo.setItemText(3, gui_i18n.tr("tp.fmt_fb2"))
         self._format_combo.setToolTip(gui_i18n.tr("tp.format_tooltip"))
         self._only_translation_chk.setText(gui_i18n.tr("tp.only_translation"))
         self._only_translation_chk.setToolTip(gui_i18n.tr("tp.only_translation_tooltip"))

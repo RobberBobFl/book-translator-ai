@@ -1,7 +1,9 @@
 """Export a translation to Markdown (with optional EPUB/PDF via pandoc)."""
 
+import re
 import shutil
 import subprocess
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from loguru import logger
 
@@ -217,3 +219,88 @@ def convert_with_pandoc(
             f"Pandoc failed: {result.stderr.strip()}"
         )
     return str(out_path)
+
+
+def export_to_fb2(
+    db: Database,
+    book_id: int,
+    translation_id: int,
+    output_path: str | Path,
+    include_original: bool = False,
+) -> str:
+    """Export a translation to FictionBook 2.0 (FB2) and return the path.
+
+    Chapters are rebuilt from the pages' ``chapter_title``; each chapter
+    becomes an FB2 ``<section>``.  When *include_original* is ``True`` the
+    original paragraph is emitted before its translation (so the FB2 file
+    contains both).  No external tools (pandoc, etc.) are required.
+    """
+    logger.info(
+        f"Starting export to FB2: book_id={book_id}, "
+        f"translation_id={translation_id}, path={output_path}"
+    )
+    book = db.load_book(book_id)
+    if book is None:
+        logger.error(f"Book #{book_id} not found")
+        raise ValueError(f"Book #{book_id} not found")
+    trans = db.get_translation(translation_id)
+    if trans is None:
+        logger.error(f"Translation #{translation_id} not found")
+        raise ValueError(f"Translation #{translation_id} not found")
+
+    pages = db.get_pages(translation_id)
+    if not pages:
+        raise ValueError("No pages to export")
+
+    fb_ns = "http://www.gribuser.ru/xml/fictionbook/2.0"
+    ET.register_namespace("", fb_ns)
+    root = ET.Element(f"{{{fb_ns}}}FictionBook")
+
+    desc = ET.SubElement(root, f"{{{fb_ns}}}description")
+    title_info = ET.SubElement(desc, f"{{{fb_ns}}}title-info")
+    book_title = ET.SubElement(title_info, f"{{{fb_ns}}}book-title")
+    book_title.text = book.title or "Book"
+
+    body = ET.SubElement(root, f"{{{fb_ns}}}body")
+
+    current_title: str | None = None
+    section = None
+    for p in pages:
+        if p.chapter_title != current_title:
+            current_title = p.chapter_title
+            section = ET.SubElement(body, f"{{{fb_ns}}}section")
+            if current_title and current_title not in ("t", "Глава", "Main Content"):
+                title_el = ET.SubElement(section, f"{{{fb_ns}}}title")
+                title_el.text = current_title
+        if include_original and p.original_text:
+            _append_paragraphs(section, p.original_text, fb_ns)
+        if p.translated_text:
+            _append_paragraphs(section, p.translated_text, fb_ns)
+        elif not include_original:
+            # Translation-only mode but page not translated yet: fall back
+            # to the original so the chapter is not empty.
+            _append_paragraphs(section, p.original_text or "", fb_ns)
+
+    ET.indent(root)
+    out = Path(output_path)
+    try:
+        out.write_text(
+            '<?xml version="1.0" encoding="UTF-8"?>\n'
+            + ET.tostring(root, encoding="unicode"),
+            encoding="utf-8",
+        )
+    except OSError as exc:
+        logger.error(f"Failed to write FB2 file {out}: {exc}")
+        raise
+    logger.info(f"Successfully exported FB2 to {out}")
+    return str(out)
+
+
+def _append_paragraphs(section, text: str, fb_ns: str) -> None:
+    """Split *text* on blank lines and append an FB2 ``<p>`` per paragraph."""
+    for para in re.split(r"\n\s*\n", text or ""):
+        para = para.strip()
+        if not para:
+            continue
+        pe = ET.SubElement(section, f"{{{fb_ns}}}p")
+        pe.text = para

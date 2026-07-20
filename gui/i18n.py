@@ -215,6 +215,7 @@ STRINGS: dict[str, dict[str, str]] = {
     "tp.fmt_markdown": {"ru": "Markdown", "en": "Markdown"},
     "tp.fmt_epub": {"ru": "EPUB", "en": "EPUB"},
     "tp.fmt_pdf": {"ru": "PDF", "en": "PDF"},
+    "tp.fmt_fb2": {"ru": "FB2", "en": "FB2"},
     "tp.only_translation": {"ru": "Только перевод", "en": "Translation only"},
     "tp.only_translation_tooltip": {
         "ru": "Не включать оригинал в экспорт",
@@ -241,6 +242,10 @@ STRINGS: dict[str, dict[str, str]] = {
     "tp.export_filter_pdf": {
         "ru": "PDF (*.pdf);;Все файлы (*)",
         "en": "PDF (*.pdf);;All files (*)",
+    },
+    "tp.export_filter_fb2": {
+        "ru": "FB2 (*.fb2);;Все файлы (*)",
+        "en": "FB2 (*.fb2);;All files (*)",
     },
     "tp.pandoc_missing.title": {"ru": "Pandoc не найден", "en": "Pandoc not found"},
     "tp.pandoc_missing.text": {
